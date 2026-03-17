@@ -1,23 +1,17 @@
 declare namespace NodeJS {
   interface ProcessEnv {
-    // Solana
-    SOLANA_RPC_URL: string;
-    SOLANA_PRIVATE_KEY: string;
+    // Vector Network Endpoints
+    VECTOR_OGMIOS_URL: string;
+    VECTOR_KOIOS_URL: string;
+    VECTOR_SUBMIT_URL: string;
+    VECTOR_EXPLORER_URL: string;
 
-    // Ethereum and other EVM chains
-    ETH_RPC_URL: string;
-    ETH_PRIVATE_KEY: string;
-    BASE_RPC_URL: string;
-    ARBITRUM_RPC_URL: string;
-    OPTIMISM_RPC_URL: string;
-    BSC_RPC_URL: string;
-    POLYGON_RPC_URL: string;
-    AVALANCHE_RPC_URL: string;
+    // Wallet Configuration
+    VECTOR_MNEMONIC: string;
+    VECTOR_ACCOUNT_INDEX: string;
 
-    // Ripple (XRP)
-    XRP_RPC_URL: string;
-    XRP_ADDRESS: string;
-    XRP_PRIVATE_KEY: string;
-    XRP_PUBLIC_KEY: string;
+    // Safety Limits
+    VECTOR_SPEND_LIMIT_PER_TX: string;
+    VECTOR_SPEND_LIMIT_DAILY: string;
   }
 }
