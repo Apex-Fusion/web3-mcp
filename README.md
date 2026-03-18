@@ -19,7 +19,7 @@ Built on [Ogmios](https://ogmios.dev/) + [Koios](https://www.koios.rest/) — no
 | `vector_get_balance` | Get ADA and token balances for any Vector address |
 | `vector_get_address` | Get the agent's wallet address and balance |
 | `vector_get_utxos` | List UTxOs for an address or the agent's wallet |
-| `vector_send_ada` | Send ADA (respects spend limits) |
+| `vector_send_apex` | Send APEX (respects spend limits) |
 | `vector_send_tokens` | Send native tokens |
 | `vector_get_spend_limits` | Check spend limits and remaining budget |
 

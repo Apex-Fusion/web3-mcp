@@ -38,7 +38,7 @@ List unspent transaction outputs for an address or the agent's wallet.
 
 **Example prompt:** "Show me the UTxOs in my wallet"
 
-### vector_send_ada
+### vector_send_apex
 
 Send ADA from the agent's wallet to a recipient. Enforces spend limits.
 

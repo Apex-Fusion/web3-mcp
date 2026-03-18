@@ -696,10 +696,10 @@ ${utxoList}`,
     }
   );
 
-  // vector_send_ada — Send ADA with safety limits
+  // vector_send_apex — Send APEX with safety limits
   // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
-    "vector_send_ada",
+    "vector_send_apex",
     "Send ADA from the agent's wallet to a recipient address (respects spend limits)",
     {
       recipientAddress: z.string().describe("Recipient Vector address (addr1...)"),
