@@ -39,8 +39,6 @@ const VECTOR_OGMIOS_URL = process.env.VECTOR_OGMIOS_URL || 'https://ogmios.vecto
 const VECTOR_SUBMIT_URL = process.env.VECTOR_SUBMIT_URL || 'https://submit.vector.testnet.apexfusion.org/api/submit/tx';
 const VECTOR_KOIOS_URL = process.env.VECTOR_KOIOS_URL || 'https://koios.vector.testnet.apexfusion.org/';
 const VECTOR_EXPLORER_URL = process.env.VECTOR_EXPLORER_URL || 'https://vector.testnet.apexscan.org';
-const VECTOR_MNEMONIC = process.env.VECTOR_MNEMONIC || '';
-const VECTOR_ACCOUNT_INDEX = parseInt(process.env.VECTOR_ACCOUNT_INDEX || '0');
 
 // Helper function to format ADA amounts
 function lovelaceToAda(lovelace: string | number | bigint): string {
@@ -65,7 +63,7 @@ function explorerTxLink(txHash: string): string {
 }
 
 // Initialize Lucid instance with Ogmios provider
-async function initLucid() {
+async function initLucid(mnemonic: string, accountIndex: number = 0) {
   const provider = new OgmiosProvider({
     ogmiosUrl: VECTOR_OGMIOS_URL,
     submitUrl: VECTOR_SUBMIT_URL,
@@ -75,18 +73,18 @@ async function initLucid() {
   // Vector uses --mainnet flag, so addresses are addr1... format
   const lucid = await Lucid.new(provider, 'Mainnet');
 
-  if (!VECTOR_MNEMONIC) {
-    throw new Error('VECTOR_MNEMONIC is required in .env file');
+  if (!mnemonic) {
+    throw new Error('mnemonic is required');
   }
 
-  const trimmedMnemonic = VECTOR_MNEMONIC.trim();
+  const trimmedMnemonic = mnemonic.trim();
   const words = trimmedMnemonic.split(/\s+/);
 
   if (words.length !== 15 && words.length !== 24) {
     throw new Error(`Invalid mnemonic: Expected 15 or 24 words, got ${words.length}`);
   }
 
-  lucid.selectWalletFromSeed(trimmedMnemonic, { accountIndex: VECTOR_ACCOUNT_INDEX });
+  lucid.selectWalletFromSeed(trimmedMnemonic, { accountIndex });
 
   const address = await lucid.wallet.address();
   if (!address) {
@@ -97,8 +95,8 @@ async function initLucid() {
 }
 
 // Get wallet info
-export async function getWalletInfo(): Promise<VectorWalletInfo> {
-  const lucid = await initLucid();
+export async function getWalletInfo(mnemonic: string, accountIndex: number = 0): Promise<VectorWalletInfo> {
+  const lucid = await initLucid(mnemonic, accountIndex);
   const address = await lucid.wallet.address();
   const utxos = await lucid.utxosAt(address);
 
@@ -153,6 +151,7 @@ export async function getWalletInfo(): Promise<VectorWalletInfo> {
 export async function sendAda(
   recipientAddress: string,
   amountAda: number,
+  mnemonic: string,
   metadata: any = null
 ): Promise<VectorAdaTransactionResult> {
   if (!recipientAddress) {
@@ -171,7 +170,7 @@ export async function sendAda(
     throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
   }
 
-  const lucid = await initLucid();
+  const lucid = await initLucid(mnemonic);
   const senderAddress = await lucid.wallet.address();
 
   // Validate recipient address
@@ -219,6 +218,7 @@ export async function sendTokens(
   policyId: string,
   assetName: string,
   amount: string,
+  mnemonic: string,
   adaAmount: number | null = null
 ): Promise<VectorTokenTransactionResult> {
   if (!recipientAddress) throw new Error('Recipient address is required');
@@ -234,7 +234,7 @@ export async function sendTokens(
     throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
   }
 
-  const lucid = await initLucid();
+  const lucid = await initLucid(mnemonic);
   const senderAddress = await lucid.wallet.address();
 
   try {
@@ -292,6 +292,7 @@ export async function sendTokens(
 // Build a complex multi-output transaction
 export async function buildTransaction(
   outputs: TxOutput[],
+  mnemonic: string,
   metadata: any = null,
   submit: boolean = false,
 ): Promise<VectorBuildTransactionResult> {
@@ -306,7 +307,7 @@ export async function buildTransaction(
     throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
   }
 
-  const lucid = await initLucid();
+  const lucid = await initLucid(mnemonic);
 
   // @ts-ignore
   let tx = lucid.newTx();
@@ -372,6 +373,7 @@ export async function buildTransaction(
 export async function deployContract(
   scriptCbor: string,
   scriptType: string,
+  mnemonic: string,
   initialDatum: string | null = null,
   lovelaceAmount: number = 2_000_000,
 ): Promise<VectorDeployContractResult> {
@@ -380,7 +382,7 @@ export async function deployContract(
     throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
   }
 
-  const lucid = await initLucid();
+  const lucid = await initLucid(mnemonic);
 
   const validator: SpendingValidator = {
     type: scriptType as any,
@@ -420,13 +422,14 @@ export async function interactWithContract(
   scriptCbor: string,
   scriptType: string,
   action: 'spend' | 'lock',
+  mnemonic: string,
   redeemer: string | null = null,
   datum: string | null = null,
   lovelaceAmount: number = 2_000_000,
   utxoRef: { txHash: string; outputIndex: number } | null = null,
   assets: Record<string, string> | null = null,
 ): Promise<VectorInteractContractResult> {
-  const lucid = await initLucid();
+  const lucid = await initLucid(mnemonic);
   const walletAddress = await lucid.wallet.address();
 
   const validator: SpendingValidator = {
@@ -599,15 +602,17 @@ ${tokens.length > 0 ? `Token Holdings (${tokens.length}):\n${tokenList}` : 'No t
   // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_address",
-    "Get the agent's Vector wallet address, balance, and token holdings",
-    {},
-    async () => {
+    "Get the Vector wallet address, balance, and token holdings derived from a mnemonic",
+    {
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the wallet"),
+    },
+    async ({ mnemonic }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
       }
       try {
-        const walletInfo = await getWalletInfo();
+        const walletInfo = await getWalletInfo(mnemonic);
 
         const tokenList = walletInfo.tokens.length > 0
           ? walletInfo.tokens.map((t: VectorToken) => `${t.quantity} ${t.name}`).join('\n')
@@ -633,7 +638,7 @@ ${walletInfo.tokens.length > 0 ? `## Token Holdings (${walletInfo.tokens.length}
             text: `Failed to get wallet information: ${error.message}
 
 **Troubleshooting Tips:**
-1. Make sure you have a valid 15 or 24-word mnemonic in VECTOR_MNEMONIC
+1. Make sure you have a valid 15 or 24-word BIP39 mnemonic
 2. Verify the Ogmios endpoint is reachable: ${VECTOR_OGMIOS_URL}
 3. Check the console logs for detailed error information`,
           }],
@@ -646,11 +651,12 @@ ${walletInfo.tokens.length > 0 ? `## Token Holdings (${walletInfo.tokens.length}
   // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_utxos",
-    "List unspent transaction outputs (UTxOs) for a Vector address or the agent's wallet",
+    "List unspent transaction outputs (UTxOs) for a Vector address or a wallet derived from a mnemonic",
     {
-      address: z.string().optional().describe("Vector address to query UTxOs for. If omitted, uses the agent's wallet."),
+      address: z.string().optional().describe("Vector address to query UTxOs for. If omitted, mnemonic is required."),
+      mnemonic: z.string().optional().describe("15 or 24-word BIP39 mnemonic (required if address is omitted)"),
     },
-    async ({ address }) => {
+    async ({ address, mnemonic }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -668,7 +674,8 @@ ${walletInfo.tokens.length > 0 ? `## Token Holdings (${walletInfo.tokens.length}
           utxos = await provider.getUtxos(address);
           queryAddress = address;
         } else {
-          const lucid = await initLucid();
+          if (!mnemonic) throw new Error('Provide either address or mnemonic');
+          const lucid = await initLucid(mnemonic);
           queryAddress = await lucid.wallet.address();
           utxos = await lucid.utxosAt(queryAddress);
         }
@@ -714,14 +721,15 @@ ${utxoList}`,
   // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_send_apex",
-    "Send ADA from the agent's wallet to a recipient address. Set unsigned_only=true to return unsigned CBOR without submitting (transaction-crafter mode).",
+    "Send ADA from a wallet to a recipient address. Set unsigned_only=true to return unsigned CBOR without submitting (transaction-crafter mode).",
     {
       recipientAddress: z.string().describe("Recipient Vector address (addr1...)"),
       amount: z.number().min(1).describe("Amount of ADA to send"),
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the sending wallet"),
       metadata: z.string().optional().describe("Optional transaction metadata in JSON format"),
       unsigned_only: z.boolean().optional().default(false).describe("If true, return unsigned TX CBOR without signing or submitting"),
     },
-    async ({ recipientAddress, amount, metadata, unsigned_only }) => {
+    async ({ recipientAddress, amount, mnemonic, metadata, unsigned_only }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -729,7 +737,7 @@ ${utxoList}`,
       try {
         if (unsigned_only) {
           const lovelaceAmount = BigInt(Math.floor(amount * 1_000_000));
-          const lucid = await initLucid();
+          const lucid = await initLucid(mnemonic);
           // @ts-ignore
           let txBuilder = lucid.newTx().payToAddress(recipientAddress, { lovelace: lovelaceAmount });
           if (metadata) {
@@ -762,7 +770,7 @@ This transaction has NOT been submitted. Sign and submit it separately.`,
           };
         }
 
-        const result = await sendAda(recipientAddress, amount, metadata);
+        const result = await sendAda(recipientAddress, amount, mnemonic, metadata);
         return {
           content: [{
             type: "text",
@@ -798,23 +806,24 @@ Amount: ${result.amount} ADA
   // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_send_tokens",
-    "Send Vector native tokens from the agent's wallet to a recipient address. Set unsigned_only=true to return unsigned CBOR without submitting.",
+    "Send Vector native tokens from a wallet to a recipient address. Set unsigned_only=true to return unsigned CBOR without submitting.",
     {
       recipientAddress: z.string().describe("Recipient Vector address (addr1...)"),
       policyId: z.string().describe("Token policy ID"),
       assetName: z.string().describe("Asset name (can be empty for policy-only tokens)"),
       amount: z.string().describe("Amount of tokens to send"),
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the sending wallet"),
       adaAmount: z.number().optional().describe("Optional ADA to include (uses minimum required if not specified)"),
       unsigned_only: z.boolean().optional().default(false).describe("If true, return unsigned TX CBOR without signing or submitting"),
     },
-    async ({ recipientAddress, policyId, assetName, amount, adaAmount, unsigned_only }) => {
+    async ({ recipientAddress, policyId, assetName, amount, mnemonic, adaAmount, unsigned_only }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
       }
       try {
         if (unsigned_only) {
-          const lucid = await initLucid();
+          const lucid = await initLucid(mnemonic);
           let assetNameHex = assetName;
           if (assetName && !/^[0-9a-fA-F]+$/.test(assetName)) {
             assetNameHex = fromText(assetName);
@@ -852,7 +861,7 @@ This transaction has NOT been submitted. Sign and submit it separately.`,
           };
         }
 
-        const result = await sendTokens(recipientAddress, policyId, assetName, amount, adaAmount);
+        const result = await sendTokens(recipientAddress, policyId, assetName, amount, mnemonic, adaAmount);
         return {
           content: [{
             type: "text",
@@ -946,16 +955,17 @@ ${log.length > 0 ? `## Recent Transactions (last ${Math.min(5, log.length)}):\n$
         lovelace: z.number().describe("Amount in lovelace (1 ADA = 1,000,000 lovelace)"),
         assets: z.record(z.string()).optional().describe("Optional native assets: { 'policyId+assetNameHex': 'quantity' }"),
       })).min(1).describe("Transaction outputs"),
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the signing wallet"),
       metadata: z.string().optional().describe("Optional JSON metadata (attached under label 674)"),
       submit: z.boolean().optional().describe("If true, sign and submit the transaction. If false/omitted, return unsigned CBOR for review."),
     },
-    async ({ outputs, metadata, submit }) => {
+    async ({ outputs, mnemonic, metadata, submit }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
       }
       try {
-        const result = await buildTransaction(outputs, metadata, submit);
+        const result = await buildTransaction(outputs, mnemonic, metadata, submit);
 
         if (result.submitted) {
           return {
@@ -1017,9 +1027,10 @@ Use vector_dry_run with this CBOR to simulate, or call vector_build_transaction 
         lovelace: z.number().describe("Amount in lovelace"),
         assets: z.record(z.string()).optional(),
       })).optional().describe("If no txCbor provided, build a TX from these outputs and evaluate it"),
+      mnemonic: z.string().optional().describe("15 or 24-word BIP39 mnemonic (required when outputs is provided)"),
       metadata: z.string().optional().describe("Optional JSON metadata when building from outputs"),
     },
-    async ({ txCbor, outputs, metadata }) => {
+    async ({ txCbor, outputs, mnemonic, metadata }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -1030,7 +1041,8 @@ Use vector_dry_run with this CBOR to simulate, or call vector_build_transaction 
 
         if (!cborToEvaluate && outputs && outputs.length > 0) {
           // Build the transaction first
-          const lucid = await initLucid();
+          if (!mnemonic) throw new Error('mnemonic is required when building from outputs');
+          const lucid = await initLucid(mnemonic);
 
           // @ts-ignore
           let tx = lucid.newTx();
@@ -1142,11 +1154,12 @@ No transaction was submitted to the network.`,
     "vector_get_transaction_history",
     "Get transaction history for a Vector address via Koios indexed queries",
     {
-      address: z.string().optional().describe("Vector address to query. If omitted, uses the agent's wallet."),
+      address: z.string().optional().describe("Vector address to query. If omitted, mnemonic is required."),
+      mnemonic: z.string().optional().describe("15 or 24-word BIP39 mnemonic (required if address is omitted)"),
       limit: z.number().min(1).max(50).optional().describe("Number of transactions to return (default: 20, max: 50)"),
       offset: z.number().min(0).optional().describe("Offset for pagination (default: 0)"),
     },
-    async ({ address, limit, offset }) => {
+    async ({ address, mnemonic, limit, offset }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -1154,7 +1167,8 @@ No transaction was submitted to the network.`,
       try {
         let queryAddress = address;
         if (!queryAddress) {
-          const lucid = await initLucid();
+          if (!mnemonic) throw new Error('Provide either address or mnemonic');
+          const lucid = await initLucid(mnemonic);
           queryAddress = await lucid.wallet.address();
         }
 
@@ -1217,10 +1231,11 @@ ${txList}
     {
       scriptCbor: z.string().describe("Compiled Plutus/Aiken script in CBOR hex format"),
       scriptType: z.enum(["PlutusV1", "PlutusV2", "PlutusV3"]).describe("Script version"),
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the deploying wallet"),
       initialDatum: z.string().optional().describe("Initial datum as CBOR hex. Use 'd87980' for void/unit datum. Defaults to void if omitted."),
       lovelaceAmount: z.number().optional().describe("ADA to lock at the script address in lovelace (default: 2,000,000 = 2 ADA)"),
     },
-    async ({ scriptCbor, scriptType, initialDatum, lovelaceAmount }) => {
+    async ({ scriptCbor, scriptType, mnemonic, initialDatum, lovelaceAmount }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -1229,6 +1244,7 @@ ${txList}
         const result = await deployContract(
           scriptCbor,
           scriptType,
+          mnemonic,
           initialDatum || null,
           lovelaceAmount || 2_000_000,
         );
@@ -1275,6 +1291,7 @@ Funds locked at the script address. Use vector_interact_contract to interact wit
       scriptCbor: z.string().describe("Compiled Plutus/Aiken script in CBOR hex"),
       scriptType: z.enum(["PlutusV1", "PlutusV2", "PlutusV3"]).describe("Script version"),
       action: z.enum(["spend", "lock"]).describe("'spend' to collect UTxOs from the script, 'lock' to send funds to it"),
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the wallet"),
       redeemer: z.string().optional().describe("Redeemer as CBOR hex (required for spend, use 'd87980' for void)"),
       datum: z.string().optional().describe("Datum as CBOR hex (required for lock, use 'd87980' for void)"),
       lovelaceAmount: z.number().optional().describe("Lovelace to lock (for lock action, default: 2,000,000 = 2 ADA)"),
@@ -1284,7 +1301,7 @@ Funds locked at the script address. Use vector_interact_contract to interact wit
       }).optional().describe("Specific UTxO to spend from (optional, otherwise spends all UTxOs at script address)"),
       assets: z.record(z.string()).optional().describe("Additional native assets for lock action: { 'policyId+assetNameHex': 'quantity' }"),
     },
-    async ({ scriptCbor, scriptType, action, redeemer, datum, lovelaceAmount, utxoRef, assets }) => {
+    async ({ scriptCbor, scriptType, action, mnemonic, redeemer, datum, lovelaceAmount, utxoRef, assets }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -1294,6 +1311,7 @@ Funds locked at the script address. Use vector_interact_contract to interact wit
           scriptCbor,
           scriptType,
           action,
+          mnemonic,
           redeemer || null,
           datum || null,
           lovelaceAmount || 2_000_000,

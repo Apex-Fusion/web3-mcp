@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
 import { existsSync } from 'fs';
+import { createServer } from 'http';
 
 // Get directory name for ES module
 const __filename = fileURLToPath(import.meta.url);
@@ -23,7 +24,7 @@ if (existsSync(envPath)) {
 }
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { registerVectorTools } from "./vector/index.js";
 
 // Create server instance
@@ -36,13 +37,42 @@ const server = new McpServer({
 console.error('Registering Vector tools...');
 registerVectorTools(server);
 
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-}
+const PORT = parseInt(process.env.PORT || '3000');
+const transports = new Map<string, SSEServerTransport>();
 
-main().catch((err: unknown) => {
-  const error = err as Error;
-  console.error("Fatal error in main():", error.message);
+const httpServer = createServer(async (req, res) => {
+  const url = new URL(req.url!, `http://localhost:${PORT}`);
+
+  if (req.method === 'GET' && url.pathname === '/sse') {
+    const transport = new SSEServerTransport('/messages', res);
+    transports.set(transport.sessionId, transport);
+    res.on('close', () => transports.delete(transport.sessionId));
+    await server.connect(transport);
+  } else if (req.method === 'POST' && url.pathname === '/messages') {
+    const sessionId = url.searchParams.get('sessionId');
+    if (!sessionId) {
+      res.writeHead(400);
+      res.end('Missing sessionId');
+      return;
+    }
+    const transport = transports.get(sessionId);
+    if (!transport) {
+      res.writeHead(404);
+      res.end('Session not found');
+      return;
+    }
+    await transport.handlePostMessage(req, res);
+  } else {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+});
+
+httpServer.listen(PORT, () => {
+  console.error(`Vector MCP Server listening on port ${PORT}`);
+});
+
+httpServer.on('error', (err: Error) => {
+  console.error('Fatal error in HTTP server:', err.message);
   process.exit(1);
 });

@@ -13,8 +13,6 @@ const VECTOR_OGMIOS_URL = process.env.VECTOR_OGMIOS_URL || 'https://ogmios.vecto
 const VECTOR_SUBMIT_URL = process.env.VECTOR_SUBMIT_URL || 'https://submit.vector.testnet.apexfusion.org/api/submit/tx';
 const VECTOR_KOIOS_URL = process.env.VECTOR_KOIOS_URL || 'https://koios.vector.testnet.apexfusion.org/';
 const VECTOR_EXPLORER_URL = process.env.VECTOR_EXPLORER_URL || 'https://vector.testnet.apexscan.org';
-const VECTOR_MNEMONIC = process.env.VECTOR_MNEMONIC || '';
-const VECTOR_ACCOUNT_INDEX = parseInt(process.env.VECTOR_ACCOUNT_INDEX || '0');
 
 // Registry constants
 const REGISTRY_SCRIPT_CBOR = "59058101010029800aba2aba1aba0aab9faab9eaab9dab9a48888889660033001300337540112232330010010032259800800c52845660026006601400314a3133002002300b001401480424600e60106010003223232330010010042259800800c00e2646644b30013372200e00515980099b8f0070028800c01900944cc014014c03c0110091bae3008001375660120026016002804852f5bded8c1230073008300830083008001918039804000cdc3a4005370e90002444444453001300f0089807004496600266e1d2004300b3754600e60186ea80062946294100a4888c8cc88cc008008004896600200300389919912cc004cdc8803801456600266e3c01c00a20030064049133005005301800440486eb8c044004dd69809000980a000a02433009004003148001222232980098079baa00194c004006910100a44100400d301300548896600260120071323322598009806000c4c9660026036003132598009807180b9baa0018991919912cc004c08000e0111640746eb4c074004dd7180e801180e800980c1baa0018b202c301a0018b2030301637540091598009806800c566002602c6ea801200516405d16405080a0566002601460266ea800a2646644b30013301337586034602e6ea802c8cdd7980d980c1baa0010048acc004cc89660020030028acc004c074006264b30013371e6eb8c064004016260226eb4c0680062941018180e000c00901a203414a0660226eacc040c05cdd500580244cc04cdd61809180b9baa00b25980099baf301b301837540020051598009805800c566002601f30013756602060306ea800600b003402913371290406d620498039bab30103018375400314a080b229410164528202c8a50405514a080a8dca1bb30013374a90001980b99ba548008cc05cdd480125eb80cc05d300103d87a80004bd70180b980a1baa002899912cc004006005159800980d000c4cdc39bad301630190014800600480b90170a503300e3756601a60286ea802000501218099baa002375c602c60266ea80122b3001300a003899199119912cc004c0380062b30013018375400d0028b20328acc004c03c0062b30013018375400d0028b20328b202c40582b3001300c3015375400319800980c980b1baa001912cc004c038c05cdd5000c4c8c8cc004004dd6180e980f180f180f180f180f180f180f180f180d1baa0042259800800c528456600266e3cdd7180f000801c528c4cc008008c07c0050192038375c603660306ea80062941016488c8cc00400400c896600200314c0103d87a80008992cc004c010006266e9520003301d0014bd7044cc00c00cc07c009019180e800a0369192cc004c03cc05cdd5000c4dd7180d980c1baa0018b202c301a301737540029111192cc004c044c068dd5004c4c8c8c9660026600e0246042603c6ea80222660346eb0c064c078dd500912cc004cdd79811180f9baa0010048acc004c0480062b3001301698009bab3017301f37540030038012022899b89482036b1024c038dd5980b980f9baa0018a50407514a080ea294101d4528203832598009811000c4c966002602c6eb4c07c00626eb8c0780062c80e8c0840062c80f8cc05cc9660026028603a6ea800626eacc058c078dd5180b180f1baa3021301e37540031640706600a6eb0c080c074dd5008919baf3021301e37540020140026006002660026eb0c078c06cdd5007803c5660026600801e603c60366ea801626644b30010018014566002604200313370e6eb4c074c0800052001801203c40782940cc054dd5980a180d9baa00f3002330013758603c60366ea803c01e294101920322232598009809980e1baa00189810180e9baa3015301d37546040603a6ea80062c80d8cc0100088cdd79810180e9baa001002459014180a9baa00430170013017301800130133754009164044808860246026008452689b2b200201";
@@ -76,20 +74,20 @@ function parseAgentDatum(datumCbor, utxoRef, assets) {
   }
 }
 
-async function initLucid() {
+async function initLucid(mnemonic: string, accountIndex: number = 0) {
   const provider = new OgmiosProvider({
     ogmiosUrl: VECTOR_OGMIOS_URL,
     submitUrl: VECTOR_SUBMIT_URL,
     koiosUrl: VECTOR_KOIOS_URL,
   });
   const lucid = await Lucid.new(provider, 'Mainnet');
-  if (!VECTOR_MNEMONIC) throw new Error('VECTOR_MNEMONIC is required');
-  const trimmed = VECTOR_MNEMONIC.trim();
+  if (!mnemonic) throw new Error('mnemonic is required');
+  const trimmed = mnemonic.trim();
   const words = trimmed.split(/\s+/);
   if (words.length !== 15 && words.length !== 24) {
     throw new Error(`Invalid mnemonic: Expected 15 or 24 words, got ${words.length}`);
   }
-  lucid.selectWalletFromSeed(trimmed, { accountIndex: VECTOR_ACCOUNT_INDEX });
+  lucid.selectWalletFromSeed(trimmed, { accountIndex });
   return lucid;
 }
 
@@ -161,17 +159,18 @@ ${capList}
     "vector_discover_agents",
     "Discover registered agents in the Vector on-chain registry, optionally filtered by capability or framework",
     {
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic (used to derive the registry address)"),
       capability: z.string().optional().describe("Filter by capability tag (e.g. 'investing', 'research')"),
       framework: z.string().optional().describe("Filter by framework (e.g. 'OpenClaw', 'LangChain', 'CrewAI')"),
       limit: z.number().optional().default(20).describe("Maximum number of agents to return (default: 20)"),
     },
-    async ({ capability, framework, limit }) => {
+    async ({ mnemonic, capability, framework, limit }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
       }
       try {
-        const lucid = await initLucid();
+        const lucid = await initLucid(mnemonic);
         const registryScript = { type: "PlutusV3", script: REGISTRY_SCRIPT_CBOR };
         const registryAddress = lucid.utils.validatorToAddress(registryScript);
         const provider = new OgmiosProvider({ ogmiosUrl: VECTOR_OGMIOS_URL, submitUrl: VECTOR_SUBMIT_URL, koiosUrl: VECTOR_KOIOS_URL });
@@ -218,15 +217,16 @@ ${capList}
   // vector_register_agent
   server.tool(
     "vector_register_agent",
-    "Register this agent in the Vector on-chain agent registry. Mints a soulbound identity NFT and locks a 10 AP3X deposit.",
+    "Register an agent in the Vector on-chain agent registry. Mints a soulbound identity NFT and locks a 10 AP3X deposit.",
     {
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the registering wallet"),
       name: z.string().min(1).max(64).describe("Agent name (e.g. 'TradingBot', 'ResearchAgent')"),
       description: z.string().max(256).describe("Short description of the agent's purpose"),
       capabilities: z.array(z.string()).describe("List of capability tags (e.g. ['investing', 'research', 'environmental'])"),
       framework: z.string().describe("Framework used (e.g. 'OpenClaw', 'LangChain', 'CrewAI', 'custom')"),
       endpoint: z.string().describe("A2A communication endpoint URL (or empty string if not applicable)"),
     },
-    async ({ name, description, capabilities, framework, endpoint }) => {
+    async ({ mnemonic, name, description, capabilities, framework, endpoint }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -235,7 +235,7 @@ ${capList}
         const safetyCheck = safetyLayer.checkTransaction(Number(MIN_AP3X_DEPOSIT));
         if (!safetyCheck.allowed) throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
 
-        const lucid = await initLucid();
+        const lucid = await initLucid(mnemonic);
         const walletAddress = await lucid.wallet.address();
         const addressDetails = lucid.utils.getAddressDetails(walletAddress);
         const vkeyHash = addressDetails.paymentCredential?.hash;
@@ -308,8 +308,9 @@ Save your Agent DID — you'll need it to update, deregister, or let other agent
       agent_id: z.string().describe("Recipient agent DID: did:vector:agent:{policyId}:{nftAssetName}"),
       message_type: z.enum(["inquiry", "proposal", "result"]).describe("Type of message"),
       payload: z.string().max(512).describe("Message payload (string, max 512 chars)"),
+      mnemonic: z.string().describe("15 or 24-word BIP39 mnemonic for the sending wallet"),
     },
-    async ({ agent_id, message_type, payload }) => {
+    async ({ agent_id, message_type, payload, mnemonic }) => {
       const rateCheck = rateLimiter.check();
       if (!rateCheck.allowed) {
         return { content: [{ type: "text", text: `Rate limit exceeded. Retry after ${rateCheck.retryAfterMs}ms.` }] };
@@ -326,7 +327,7 @@ Save your Agent DID — you'll need it to update, deregister, or let other agent
         const profile = parseAgentDatum(utxo.datum, `${utxo.txHash}#${utxo.outputIndex}`, utxo.assets);
         if (!profile?.ownerVkeyHash) throw new Error('Could not parse agent owner from registry datum');
 
-        const lucid = await initLucid();
+        const lucid = await initLucid(mnemonic);
         const senderAddress = await lucid.wallet.address();
         const recipientAddress = lucid.utils.credentialToAddress({ type: 'Key', hash: profile.ownerVkeyHash });
         const minAda = 2_000_000n;

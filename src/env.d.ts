@@ -6,10 +6,6 @@ declare namespace NodeJS {
     VECTOR_SUBMIT_URL: string;
     VECTOR_EXPLORER_URL: string;
 
-    // Wallet Configuration
-    VECTOR_MNEMONIC: string;
-    VECTOR_ACCOUNT_INDEX: string;
-
     // Safety Limits
     VECTOR_SPEND_LIMIT_PER_TX: string;
     VECTOR_SPEND_LIMIT_DAILY: string;
