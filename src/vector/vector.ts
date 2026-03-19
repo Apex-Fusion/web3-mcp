@@ -1,19 +1,8 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { Lucid, fromText, Data, applyDoubleCborEncoding } from 'lucid-cardano';
-import type { SpendingValidator } from 'lucid-cardano';
+import { Lucid, fromText, Data, applyDoubleCborEncoding, validatorToAddress, validatorToScriptHash, getAddressDetails } from '@lucid-evolution/lucid';
+import type { SpendingValidator } from '@lucid-evolution/lucid';
 
-/**
- * Lucid v0.10.x lacks PlutusV3 support. This helper downcasts PlutusV3 to
- * PlutusV2 for hashing/address derivation (same blake2b-224 algorithm).
- * Use this when passing validators to any Lucid method.
- */
-function lucidCompat(validator: SpendingValidator): SpendingValidator {
-  if ((validator.type as string) === 'PlutusV3') {
-    return { ...validator, type: 'PlutusV2' as const };
-  }
-  return validator;
-}
 import * as dotenv from 'dotenv';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -83,7 +72,7 @@ async function initLucid(mnemonic: string, accountIndex: number = 0) {
   });
 
   // Vector uses --mainnet flag, so addresses are addr1... format
-  const lucid = await Lucid.new(provider, 'Mainnet');
+  const lucid = await Lucid(provider, 'Mainnet');
 
   if (!mnemonic) {
     throw new Error('mnemonic is required');
@@ -97,15 +86,12 @@ async function initLucid(mnemonic: string, accountIndex: number = 0) {
     throw new Error(`Invalid mnemonic: Expected 12, 15, 18, 21 or 24 words, got ${words.length}`);
   }
 
-  lucid.selectWalletFromSeed(trimmedMnemonic, { accountIndex });
+  lucid.selectWallet.fromSeed(trimmedMnemonic, { accountIndex });
 
-  const address = await lucid.wallet.address();
+  const address = await lucid.wallet().address();
   if (!address) {
     throw new Error('Failed to derive address from mnemonic');
   }
-
-  // Store the full wallet address so credential-based UTxO lookups resolve correctly
-  provider.setWalletAddress(address);
 
   return lucid;
 }
@@ -113,7 +99,7 @@ async function initLucid(mnemonic: string, accountIndex: number = 0) {
 // Get wallet info
 export async function getWalletInfo(mnemonic: string, accountIndex: number = 0): Promise<VectorWalletInfo> {
   const lucid = await initLucid(mnemonic, accountIndex);
-  const address = await lucid.wallet.address();
+  const address = await lucid.wallet().address();
   const utxos = await lucid.utxosAt(address);
 
   let adaBalance = '0';
@@ -187,31 +173,26 @@ export async function sendAda(
   }
 
   const lucid = await initLucid(mnemonic);
-  const senderAddress = await lucid.wallet.address();
+  const senderAddress = await lucid.wallet().address();
 
   // Validate recipient address
   try {
-    // @ts-ignore
-    lucid.utils.getAddressDetails(recipientAddress);
+    getAddressDetails(recipientAddress);
   } catch (error) {
     throw new Error(`Invalid recipient address: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // Build transaction
-  // @ts-ignore
   let tx = lucid.newTx()
-    .payToAddress(recipientAddress, { lovelace: BigInt(lovelaceAmount) });
+    .pay.ToAddress(recipientAddress, { lovelace: BigInt(lovelaceAmount) });
 
   if (metadata) {
     const parsedMetadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-    // @ts-ignore
     tx = tx.attachMetadata(674, parsedMetadata);
   }
 
-  // @ts-ignore
-  tx = await tx.complete();
-  // @ts-ignore
-  const signedTx = await tx.sign().complete();
+  const signBuilder = await tx.complete();
+  const signedTx = await signBuilder.sign.withWallet().complete();
   const txHash = await signedTx.submit();
 
   // Record in safety layer
@@ -251,11 +232,10 @@ export async function sendTokens(
   }
 
   const lucid = await initLucid(mnemonic);
-  const senderAddress = await lucid.wallet.address();
+  const senderAddress = await lucid.wallet().address();
 
   try {
-    // @ts-ignore
-    lucid.utils.getAddressDetails(recipientAddress);
+    getAddressDetails(recipientAddress);
   } catch (error) {
     throw new Error(`Invalid recipient address: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -272,17 +252,14 @@ export async function sendTokens(
     ? BigInt(Math.floor(adaAmount * 1_000_000))
     : BigInt(2_000_000); // Default min ADA
 
-  // @ts-ignore
   let tx = lucid.newTx()
-    .payToAddress(recipientAddress, {
+    .pay.ToAddress(recipientAddress, {
       lovelace: outputLovelace,
       ...assets,
     });
 
-  // @ts-ignore
-  tx = await tx.complete();
-  // @ts-ignore
-  const signedTx = await tx.sign().complete();
+  const signBuilder = await tx.complete();
+  const signedTx = await signBuilder.sign.withWallet().complete();
   const txHash = await signedTx.submit();
 
   safetyLayer.recordTransaction(txHash, Number(outputLovelace), recipientAddress);
@@ -325,7 +302,6 @@ export async function buildTransaction(
 
   const lucid = await initLucid(mnemonic);
 
-  // @ts-ignore
   let tx = lucid.newTx();
 
   for (const output of outputs) {
@@ -337,27 +313,22 @@ export async function buildTransaction(
         assets[unit] = BigInt(qty);
       }
     }
-    tx = tx.payToAddress(output.address, assets);
+    tx = tx.pay.ToAddress(output.address, assets);
   }
 
   if (metadata) {
     const parsedMetadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-    // @ts-ignore
     tx = tx.attachMetadata(674, parsedMetadata);
   }
 
-  // @ts-ignore
   const completedTx = await tx.complete();
-  // @ts-ignore
-  const fee = completedTx.fee;
-  // @ts-ignore
+  const txJson = (completedTx as any).toJSON?.() ?? {};
+  const fee = txJson?.body?.fee ?? '0';
   const txHash = completedTx.toHash();
-  // @ts-ignore
-  const txCbor = completedTx.toString();
+  const txCbor = completedTx.toCBOR();
 
   if (submit) {
-    // @ts-ignore
-    const signedTx = await completedTx.sign().complete();
+    const signedTx = await completedTx.sign.withWallet().complete();
     const submittedHash = await signedTx.submit();
 
     safetyLayer.recordTransaction(submittedHash, totalLovelace, outputs.map(o => o.address).join(', '));
@@ -405,21 +376,16 @@ export async function deployContract(
     script: applyDoubleCborEncoding(scriptCbor),
   };
 
-  // @ts-ignore
-  const scriptAddress = lucid.utils.validatorToAddress(lucidCompat(validator));
-  // @ts-ignore
-  const scriptHash = lucid.utils.validatorToScriptHash(lucidCompat(validator));
+  const scriptAddress = validatorToAddress('Mainnet', validator);
+  const scriptHash = validatorToScriptHash(validator);
 
   const datum = initialDatum || Data.void();
 
-  // @ts-ignore
   let tx = lucid.newTx()
-    .payToContract(scriptAddress, { inline: datum }, { lovelace: BigInt(lovelaceAmount) });
+    .pay.ToAddressWithData(scriptAddress, { kind: "inline", value: datum }, { lovelace: BigInt(lovelaceAmount) });
 
-  // @ts-ignore
-  tx = await tx.complete();
-  // @ts-ignore
-  const signedTx = await tx.sign().complete();
+  const signBuilder = await tx.complete();
+  const signedTx = await signBuilder.sign.withWallet().complete();
   const txHash = await signedTx.submit();
 
   safetyLayer.recordTransaction(txHash, lovelaceAmount, scriptAddress);
@@ -446,15 +412,14 @@ export async function interactWithContract(
   assets: Record<string, string> | null = null,
 ): Promise<VectorInteractContractResult> {
   const lucid = await initLucid(mnemonic);
-  const walletAddress = await lucid.wallet.address();
+  const walletAddress = await lucid.wallet().address();
 
   const validator: SpendingValidator = {
     type: scriptType as any,
     script: applyDoubleCborEncoding(scriptCbor),
   };
 
-  // @ts-ignore
-  const scriptAddress = lucid.utils.validatorToAddress(lucidCompat(validator));
+  const scriptAddress = validatorToAddress('Mainnet', validator);
 
   if (action === 'lock') {
     const safetyCheck = safetyLayer.checkTransaction(lovelaceAmount);
@@ -470,14 +435,11 @@ export async function interactWithContract(
       }
     }
 
-    // @ts-ignore
     let tx = lucid.newTx()
-      .payToContract(scriptAddress, { inline: datumData }, outputAssets);
+      .pay.ToAddressWithData(scriptAddress, { kind: "inline", value: datumData }, outputAssets);
 
-    // @ts-ignore
-    tx = await tx.complete();
-    // @ts-ignore
-    const signedTx = await tx.sign().complete();
+    const signBuilder = await tx.complete();
+    const signedTx = await signBuilder.sign.withWallet().complete();
     const txHash = await signedTx.submit();
 
     safetyLayer.recordTransaction(txHash, lovelaceAmount, scriptAddress);
@@ -492,9 +454,9 @@ export async function interactWithContract(
     // SPEND: collect from script
     let scriptUtxos;
     if (utxoRef) {
-      scriptUtxos = await lucid.provider.getUtxosByOutRef([utxoRef]);
+      scriptUtxos = await lucid.utxosByOutRef([utxoRef]);
     } else {
-      scriptUtxos = await lucid.provider.getUtxos(scriptAddress);
+      scriptUtxos = await lucid.utxosAt(scriptAddress);
     }
 
     if (!scriptUtxos || scriptUtxos.length === 0) {
@@ -503,27 +465,23 @@ export async function interactWithContract(
 
     const redeemerData = redeemer || Data.void();
 
-    // @ts-ignore
-    let tx = lucid.newTx()
-      .collectFrom(scriptUtxos, redeemerData)
-      .attachSpendingValidator(lucidCompat(validator))
-      .addSigner(walletAddress);
-
+    let completedTx;
     try {
-      // @ts-ignore
-      tx = await tx.complete();
+      completedTx = await lucid.newTx()
+        .collectFrom(scriptUtxos, redeemerData)
+        .attach.SpendingValidator(validator)
+        .addSigner(walletAddress)
+        .complete();
     } catch (err) {
       // Retry without native UPLC evaluator if it fails
-      // @ts-ignore
-      tx = await lucid.newTx()
+      completedTx = await lucid.newTx()
         .collectFrom(scriptUtxos, redeemerData)
-        .attachSpendingValidator(lucidCompat(validator))
+        .attach.SpendingValidator(validator)
         .addSigner(walletAddress)
-        .complete({ nativeUplc: false });
+        .complete({ localUPLCEval: false });
     }
 
-    // @ts-ignore
-    const signedTx = await tx.sign().complete();
+    const signedTx = await completedTx.sign.withWallet().complete();
     const txHash = await signedTx.submit();
 
     // No spend recording for collecting — funds are coming back to wallet
@@ -541,7 +499,6 @@ export async function interactWithContract(
 export function registerVectorTools(server: McpServer) {
 
   // vector_get_balance — Get balance for any address
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_balance",
     "Get ADA and token balances for a Vector address",
@@ -615,7 +572,6 @@ ${tokens.length > 0 ? `Token Holdings (${tokens.length}):\n${tokenList}` : 'No t
   );
 
   // vector_get_address — Get the agent's wallet address and balance
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_address",
     "Get the Vector wallet address, balance, and token holdings derived from a mnemonic",
@@ -664,7 +620,6 @@ ${walletInfo.tokens.length > 0 ? `## Token Holdings (${walletInfo.tokens.length}
   );
 
   // vector_get_utxos — List UTxOs for an address or the wallet
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_utxos",
     "List unspent transaction outputs (UTxOs) for a Vector address or a wallet derived from a mnemonic",
@@ -692,7 +647,7 @@ ${walletInfo.tokens.length > 0 ? `## Token Holdings (${walletInfo.tokens.length}
         } else {
           if (!mnemonic) throw new Error('Provide either address or mnemonic');
           const lucid = await initLucid(mnemonic);
-          queryAddress = await lucid.wallet.address();
+          queryAddress = await lucid.wallet().address();
           utxos = await lucid.utxosAt(queryAddress);
         }
 
@@ -734,7 +689,6 @@ ${utxoList}`,
   );
 
   // vector_send_apex — Send APEX with safety limits (or craft unsigned TX)
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_send_apex",
     "Send ADA from a wallet to a recipient address. Set unsigned_only=true to return unsigned CBOR without submitting (transaction-crafter mode).",
@@ -754,19 +708,15 @@ ${utxoList}`,
         if (unsigned_only) {
           const lovelaceAmount = BigInt(Math.floor(amount * 1_000_000));
           const lucid = await initLucid(mnemonic);
-          // @ts-ignore
-          let txBuilder = lucid.newTx().payToAddress(recipientAddress, { lovelace: lovelaceAmount });
+          let txBuilder = lucid.newTx().pay.ToAddress(recipientAddress, { lovelace: lovelaceAmount });
           if (metadata) {
             const parsedMetadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-            // @ts-ignore
             txBuilder = txBuilder.attachMetadata(674, parsedMetadata);
           }
-          // @ts-ignore
           const tx = await txBuilder.complete();
-          // @ts-ignore
-          const fee = tx.fee;
-          // @ts-ignore
-          const txCbor = tx.toString();
+          const txJson = (tx as any).toJSON?.() ?? {};
+          const fee = txJson?.body?.fee ?? '0';
+          const txCbor = tx.toCBOR();
           return {
             content: [{
               type: "text",
@@ -819,7 +769,6 @@ Amount: ${result.amount} ADA
   );
 
   // vector_send_tokens — Send native tokens with safety limits (or craft unsigned TX)
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_send_tokens",
     "Send Vector native tokens from a wallet to a recipient address. Set unsigned_only=true to return unsigned CBOR without submitting.",
@@ -848,14 +797,12 @@ Amount: ${result.amount} ADA
           const outputLovelace = adaAmount
             ? BigInt(Math.floor(adaAmount * 1_000_000))
             : BigInt(2_000_000);
-          // @ts-ignore
           const tx = await lucid.newTx()
-            .payToAddress(recipientAddress, { lovelace: outputLovelace, [unit]: BigInt(amount) })
+            .pay.ToAddress(recipientAddress, { lovelace: outputLovelace, [unit]: BigInt(amount) })
             .complete();
-          // @ts-ignore
-          const fee = tx.fee;
-          // @ts-ignore
-          const txCbor = tx.toString();
+          const txJson = (tx as any).toJSON?.() ?? {};
+          const fee = txJson?.body?.fee ?? '0';
+          const txCbor = tx.toCBOR();
           return {
             content: [{
               type: "text",
@@ -916,7 +863,6 @@ Included ADA: ${result.ada} ADA
   );
 
   // vector_get_spend_limits — Check safety layer status
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_spend_limits",
     "Check current spend limits and remaining daily budget",
@@ -961,7 +907,6 @@ ${log.length > 0 ? `## Recent Transactions (last ${Math.min(5, log.length)}):\n$
   );
 
   // vector_build_transaction — Build a complex multi-output transaction
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_build_transaction",
     "Build a complex multi-output transaction with metadata. Set submit=true to sign and submit, or false to return unsigned CBOR for review.",
@@ -1032,7 +977,6 @@ Use vector_dry_run with this CBOR to simulate, or call vector_build_transaction 
   );
 
   // vector_dry_run — Simulate a transaction without submitting
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_dry_run",
     "Simulate a transaction without submitting — returns fee estimate and validation result",
@@ -1060,7 +1004,6 @@ Use vector_dry_run with this CBOR to simulate, or call vector_build_transaction 
           if (!mnemonic) throw new Error('mnemonic is required when building from outputs');
           const lucid = await initLucid(mnemonic);
 
-          // @ts-ignore
           let tx = lucid.newTx();
           for (const output of outputs) {
             const assets: Record<string, bigint> = { lovelace: BigInt(output.lovelace) };
@@ -1069,22 +1012,19 @@ Use vector_dry_run with this CBOR to simulate, or call vector_build_transaction 
                 assets[unit] = BigInt(qty);
               }
             }
-            tx = tx.payToAddress(output.address, assets);
+            tx = tx.pay.ToAddress(output.address, assets);
           }
 
           if (metadata) {
             const parsedMetadata = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-            // @ts-ignore
             tx = tx.attachMetadata(674, parsedMetadata);
           }
 
-          // @ts-ignore
           const completedTx = await tx.complete();
-          // @ts-ignore
-          feeFromBuild = String(completedTx.fee);
-          // @ts-ignore
-          const signedTx = await completedTx.sign().complete();
-          cborToEvaluate = signedTx.toString();
+          const txJson = (completedTx as any).toJSON?.() ?? {};
+          feeFromBuild = String(txJson?.body?.fee ?? '0');
+          const signedTx = await completedTx.sign.withWallet().complete();
+          cborToEvaluate = signedTx.toCBOR();
         }
 
         if (!cborToEvaluate) {
@@ -1165,7 +1105,6 @@ No transaction was submitted to the network.`,
   );
 
   // vector_get_transaction_history — Get transaction history via Koios
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_get_transaction_history",
     "Get transaction history for a Vector address via Koios indexed queries",
@@ -1185,7 +1124,7 @@ No transaction was submitted to the network.`,
         if (!queryAddress) {
           if (!mnemonic) throw new Error('Provide either address or mnemonic');
           const lucid = await initLucid(mnemonic);
-          queryAddress = await lucid.wallet.address();
+          queryAddress = await lucid.wallet().address();
         }
 
         const provider = new OgmiosProvider({
@@ -1240,7 +1179,6 @@ ${txList}
   );
 
   // vector_deploy_contract — Deploy a Plutus/Aiken smart contract
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_deploy_contract",
     "Deploy a Plutus/Aiken smart contract to Vector by sending funds to its script address",
@@ -1299,7 +1237,6 @@ Funds locked at the script address. Use vector_interact_contract to interact wit
   );
 
   // vector_interact_contract — Interact with a deployed smart contract
-  // @ts-ignore: MCP SDK deep type instantiation
   server.tool(
     "vector_interact_contract",
     "Interact with a deployed Plutus/Aiken smart contract — lock funds or spend from it",

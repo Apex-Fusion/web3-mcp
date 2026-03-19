@@ -2,13 +2,14 @@ import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer, stopServer, callTool, getMnemonic, wait, ServerContext } from './setup.ts';
 
-// Always-succeeds PlutusV3 validator (accepts any datum/redeemer/context)
-const ALWAYS_SUCCEEDS_V3 = '49480100002221200101';
+// Always-succeeds PlutusV2 validator (accepts any datum/redeemer/context, returns True)
+const ALWAYS_SUCCEEDS_V2 = '49480100002221200101';
 
 let ctx: ServerContext;
 let mnemonic: string;
 let walletAddress: string;
 let walletHasAda = false;
+let walletBalanceAda = 0;
 let agentDid: string | null = null;
 
 before(async () => {
@@ -62,6 +63,7 @@ describe('Wallet Tools', () => {
     const balanceMatch = text.match(/ADA Balance:\s*([\d.]+)/);
     if (balanceMatch && parseFloat(balanceMatch[1]) > 0) {
       walletHasAda = true;
+      walletBalanceAda = parseFloat(balanceMatch[1]);
       console.log(`Wallet funded: ${balanceMatch[1]} ADA`);
     } else {
       console.log('Wallet has 0 ADA - transaction tests will verify error handling');
@@ -105,6 +107,41 @@ describe('History & Limits', () => {
         || text.includes('Failed to get transaction history'),
       'Should show history, no-transactions message, or error'
     );
+  });
+});
+
+// ─── UTxO Consolidation ─────────────────────────────────────────────────────
+// Repeated test runs fragment the wallet into many small UTxOs. Plutus script
+// transactions need collateral (≥5 ADA in ≤3 inputs). Consolidate up-front so
+// later tests don't fail from fragmentation.
+
+describe('UTxO Consolidation', () => {
+  test('consolidate wallet UTxOs', { timeout: 120_000 }, async () => {
+    if (!walletHasAda) return;
+    const utxoText = await callTool(ctx.client, 'vector_get_utxos', { mnemonic });
+    const countMatch = utxoText.match(/Total:\s*(\d+)/);
+    const utxoCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+    if (utxoCount <= 3) {
+      console.log(`Only ${utxoCount} UTxO(s) — no consolidation needed`);
+      return;
+    }
+    // Send most of the balance to self, forcing Lucid to consume many inputs.
+    // This reduces the UTxO set to ~2 (output + change).
+    const consolidateAmount = Math.floor(walletBalanceAda) - 2; // leave buffer for fees
+    if (consolidateAmount < 2) {
+      console.log(`Balance too low (${walletBalanceAda} ADA) to consolidate`);
+      return;
+    }
+    console.log(`${utxoCount} UTxOs detected — consolidating ${consolidateAmount} ADA to self...`);
+    const text = await callTool(ctx.client, 'vector_send_apex', {
+      recipientAddress: walletAddress,
+      amount: consolidateAmount,
+      mnemonic,
+    });
+    console.log(text);
+    assertSuccessOrKnownError(text, /Transaction Hash:/, 'consolidate UTxOs');
+    console.log('Waiting 10s for consolidation tx to confirm...');
+    await wait(10);
   });
 });
 
@@ -187,8 +224,8 @@ describe('Smart Contract Tools', () => {
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_deploy_contract', {
-      scriptCbor: ALWAYS_SUCCEEDS_V3,
-      scriptType: 'PlutusV3',
+      scriptCbor: ALWAYS_SUCCEEDS_V2,
+      scriptType: 'PlutusV2',
       mnemonic,
     });
     console.log(text);
@@ -201,8 +238,8 @@ describe('Smart Contract Tools', () => {
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_interact_contract', {
-      scriptCbor: ALWAYS_SUCCEEDS_V3,
-      scriptType: 'PlutusV3',
+      scriptCbor: ALWAYS_SUCCEEDS_V2,
+      scriptType: 'PlutusV2',
       action: 'lock',
       mnemonic,
       datum: 'd87980',
@@ -218,8 +255,8 @@ describe('Smart Contract Tools', () => {
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_interact_contract', {
-      scriptCbor: ALWAYS_SUCCEEDS_V3,
-      scriptType: 'PlutusV3',
+      scriptCbor: ALWAYS_SUCCEEDS_V2,
+      scriptType: 'PlutusV2',
       action: 'spend',
       mnemonic,
       redeemer: 'd87980',
@@ -268,7 +305,7 @@ describe('Agent Network Tools', () => {
 
   test('vector_get_agent_profile', { timeout: 120_000 }, async () => {
     // Use a known DID format even if registration failed, to test the tool responds
-    const testDid = agentDid || `did:vector:agent:${ALWAYS_SUCCEEDS_V3}:${'a'.repeat(64)}`;
+    const testDid = agentDid || `did:vector:agent:${ALWAYS_SUCCEEDS_V2}:${'a'.repeat(64)}`;
     const text = await callTool(ctx.client, 'vector_get_agent_profile', { agent_id: testDid });
     console.log(text);
     assertSuccessOrKnownError(text, /Agent Profile/, 'vector_get_agent_profile');
@@ -312,7 +349,7 @@ describe('Agent Network Tools', () => {
 
   test('vector_message_agent', { timeout: 120_000 }, async () => {
     // Use a known DID format even if registration failed, to test the tool responds
-    const testDid = agentDid || `did:vector:agent:${ALWAYS_SUCCEEDS_V3}:${'a'.repeat(64)}`;
+    const testDid = agentDid || `did:vector:agent:${ALWAYS_SUCCEEDS_V2}:${'a'.repeat(64)}`;
     if (walletHasAda && agentDid) {
       console.log('Waiting 10s for UTxOs to settle before message...');
       await wait(10);

@@ -1,7 +1,7 @@
 /**
  * Custom Lucid Provider backed by Ogmios HTTP JSON-RPC + Vector submit-api.
  *
- * Implements the lucid-cardano Provider interface so we can use Lucid's
+ * Implements the @lucid-evolution/lucid Provider interface so we can use Lucid's
  * transaction building/signing without depending on Blockfrost.
  */
 import fetch from 'cross-fetch';
@@ -12,8 +12,8 @@ import type {
   OutRef,
   Credential,
   Delegation,
-  // @ts-ignore - type aliases used as string in lucid
-} from 'lucid-cardano';
+  EvalRedeemer,
+} from '@lucid-evolution/lucid';
 
 interface OgmiosProviderConfig {
   ogmiosUrl: string;
@@ -25,21 +25,12 @@ export class OgmiosProvider implements Provider {
   private ogmiosUrl: string;
   private submitUrl: string;
   private koiosUrl: string | undefined;
-  private walletAddress: string | undefined;
 
   constructor(config: OgmiosProviderConfig) {
     // Strip trailing slashes for consistent URL building
     this.ogmiosUrl = config.ogmiosUrl.replace(/\/+$/, '');
     this.submitUrl = config.submitUrl.replace(/\/+$/, '');
     this.koiosUrl = config.koiosUrl?.replace(/\/+$/, '');
-  }
-
-  /**
-   * Store the wallet's full bech32 address so credential-based lookups
-   * (used internally by Lucid during tx building) can resolve to it.
-   */
-  setWalletAddress(address: string): void {
-    this.walletAddress = address;
   }
 
   /**
@@ -93,7 +84,9 @@ export class OgmiosProvider implements Provider {
       collateralPercentage: result.collateralPercentage ?? 150,
       maxCollateralInputs: result.maxCollateralInputs ?? 3,
       costModels: this.parseCostModels(result.plutusCostModels ?? result.costModels ?? {}),
-      minfeeRefscriptCostPerByte: result.minFeeReferenceScripts?.base ?? 15,
+      minFeeRefScriptCostPerByte: result.minFeeReferenceScripts?.base ?? 15,
+      drepDeposit: BigInt(result.delegateRepresentativeDeposit?.ada?.lovelace ?? 500000000),
+      govActionDeposit: BigInt(result.governanceActionDeposit?.ada?.lovelace ?? 100000000000),
     } as ProtocolParameters;
   }
 
@@ -125,21 +118,14 @@ export class OgmiosProvider implements Provider {
   }
 
   async getUtxos(addressOrCredential: string | Credential): Promise<UTxO[]> {
-    let address: string;
-    if (typeof addressOrCredential === 'string') {
-      address = addressOrCredential;
-    } else if (this.walletAddress) {
-      // Lucid's wallet internally calls getUtxos(paymentCredential) during tx building.
-      // Ogmios requires a full bech32 address, so use the stored wallet address.
-      address = this.walletAddress;
-    } else {
+    if (typeof addressOrCredential !== 'string') {
       throw new Error(
-        'Credential-based UTxO lookup requires a wallet address. ' +
-        'Call provider.setWalletAddress(addr) after selecting a wallet.'
+        'Credential-based UTxO lookup is not supported by Ogmios. ' +
+        'Please provide a bech32 address string.'
       );
     }
 
-    const result = await this.rpc('queryLedgerState/utxo', { addresses: [address] });
+    const result = await this.rpc('queryLedgerState/utxo', { addresses: [addressOrCredential] });
     return this.ogmiosUtxosToLucid(result);
   }
 
@@ -149,23 +135,33 @@ export class OgmiosProvider implements Provider {
   }
 
   async getUtxoByUnit(unit: string): Promise<UTxO> {
-    // This requires an indexer; try Koios if available
+    const policyId = unit.slice(0, 56);
+    const assetName = unit.slice(56);
+
+    // Try Koios indexer first (fastest path)
     if (this.koiosUrl) {
-      const policyId = unit.slice(0, 56);
-      const assetName = unit.slice(56);
-      const response = await fetch(`${this.koiosUrl}/api/v1/asset_utxos`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ _asset_list: [[policyId, assetName]] }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        if (data.length > 0) {
-          return this.koiosUtxoToLucid(data[0]);
+      try {
+        const response = await fetch(`${this.koiosUrl}/api/v1/asset_utxos`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ _asset_list: [[policyId, assetName]] }),
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.length > 0) {
+            return this.koiosUtxoToLucid(data[0]);
+          }
         }
+      } catch (err) {
+        // Koios unreachable — caller can fall back to scanning UTxOs
       }
     }
-    throw new Error('getUtxoByUnit requires an indexer (Koios). Not available or asset not found.');
+
+    throw new Error(
+      `Asset ${policyId.slice(0, 8)}...${assetName ? assetName.slice(0, 8) + '...' : '(empty)'} not found. ` +
+      `${this.koiosUrl ? 'Koios returned no results.' : 'No Koios indexer configured.'} ` +
+      `The asset may not exist on-chain yet (wait for TX confirmation) or may have been burned.`
+    );
   }
 
   async getUtxosByOutRef(outRefs: OutRef[]): Promise<UTxO[]> {
@@ -264,8 +260,30 @@ export class OgmiosProvider implements Provider {
   }
 
   /**
+   * Evaluate a transaction (lucid-evolution Provider interface).
+   * Returns execution units for script validation as EvalRedeemer[].
+   */
+  async evaluateTx(tx: string, additionalUTxOs?: UTxO[]): Promise<EvalRedeemer[]> {
+    const result = await this.rpc('evaluateTransaction', {
+      transaction: { cbor: tx },
+    });
+    // Parse result to EvalRedeemer[] format
+    if (Array.isArray(result)) {
+      return result.map((item: any) => ({
+        ex_units: {
+          mem: item.budget?.memory ?? 0,
+          steps: item.budget?.cpu ?? 0,
+        },
+        redeemer_index: item.validator?.index ?? 0,
+        redeemer_tag: item.validator?.purpose ?? 'spend',
+      }));
+    }
+    return [];
+  }
+
+  /**
    * Evaluate a transaction without submitting (dry run).
-   * Returns execution units for script validation.
+   * Backward-compatible alias — returns raw Ogmios response.
    */
   async evaluateTransaction(txCborHex: string): Promise<any> {
     return this.rpc('evaluateTransaction', {

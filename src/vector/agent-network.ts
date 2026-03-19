@@ -1,17 +1,12 @@
 // @ts-nocheck
 // Agent network tools: register, discover, message, get_profile, update, deregister, transfer
-// ts-nocheck isolates C (Cardano WASM) imports from tsc's complex type inference
 
 import { z } from "zod";
-import { Lucid, fromText, toText, Data, Constr, C } from 'lucid-cardano';
+import { Lucid, fromText, toText, Data, Constr, validatorToAddress, validatorToScriptHash, getAddressDetails, credentialToAddress } from '@lucid-evolution/lucid';
+import { blake2b } from '@noble/hashes/blake2b';
 import { OgmiosProvider } from './ogmios-provider.js';
 import { safetyLayer } from './safety.js';
 import { rateLimiter } from './rate-limiter.js';
-
-// Lucid v0.10.x lacks PlutusV3 — downcast to PlutusV2 for hashing (same algorithm)
-function lucidCompat(validator) {
-  return validator.type === 'PlutusV3' ? { ...validator, type: 'PlutusV2' } : validator;
-}
 
 // Env config (mirrors vector.ts)
 const VECTOR_OGMIOS_URL = process.env.VECTOR_OGMIOS_URL || 'https://ogmios.vector.testnet.apexfusion.org';
@@ -26,6 +21,16 @@ const MIN_AP3X_DEPOSIT = 10_000_000n;
 const AGENT_MESSAGE_LABEL = 674;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// Cardano metadata strings must be ≤ 64 bytes. Chunk long strings into arrays.
+function metadataStr(s: string): string | string[] {
+  if (s.length <= 64) return s;
+  const chunks: string[] = [];
+  for (let i = 0; i < s.length; i += 64) {
+    chunks.push(s.slice(i, i + 64));
+  }
+  return chunks;
+}
 
 function lovelaceToAda(lovelace) {
   return (Number(BigInt(String(lovelace))) / 1_000_000).toFixed(6);
@@ -43,7 +48,7 @@ function newProvider() {
 // Matches Aiken's derive_asset_name (verified via CBOR parity tests in agent-registry repo)
 function deriveNftAssetName(txHash, outputIndex) {
   const outRefCbor = Data.to(new Constr(0, [txHash, BigInt(outputIndex)]));
-  const hashBytes = C.hash_blake2b256(Buffer.from(outRefCbor, 'hex'));
+  const hashBytes = blake2b(Buffer.from(outRefCbor, 'hex'), { dkLen: 32 });
   return Buffer.from(hashBytes).toString('hex');
 }
 
@@ -101,7 +106,24 @@ function parseDid(agentId) {
 
 async function resolveAgentUtxo(provider, agentId) {
   const { unit } = parseDid(agentId);
-  const utxo = await provider.getUtxoByUnit(unit);
+
+  let utxo;
+  try {
+    utxo = await provider.getUtxoByUnit(unit);
+  } catch {
+    // Koios unavailable or asset not found — will try Ogmios fallback below
+  }
+
+  // If Koios returned a UTxO without datum, or didn't find one, scan via Ogmios
+  if (!utxo || !utxo.datum) {
+    const registryAddress = await getRegistryAddress();
+    const allUtxos = await provider.getUtxos(registryAddress);
+    const ogmiosUtxo = allUtxos.find(u => u.assets[unit] && u.assets[unit] > 0n);
+    if (ogmiosUtxo) {
+      utxo = ogmiosUtxo;
+    }
+  }
+
   if (!utxo) throw new Error(`Agent not found: no UTxO holds NFT ${unit}. The agent may not exist or may have deregistered.`);
   if (!utxo.datum) throw new Error('Registry UTxO found but has no inline datum.');
   const profile = parseAgentDatum(utxo.datum, `${utxo.txHash}#${utxo.outputIndex}`, utxo.assets);
@@ -138,7 +160,7 @@ function validateCapabilities(capabilities) {
 
 async function initLucid(mnemonic, accountIndex = 0) {
   const provider = newProvider();
-  const lucid = await Lucid.new(provider, 'Mainnet');
+  const lucid = await Lucid(provider, 'Mainnet');
   if (!mnemonic) throw new Error('mnemonic is required');
   const trimmed = mnemonic.trim();
   const words = trimmed.split(/\s+/);
@@ -146,11 +168,7 @@ async function initLucid(mnemonic, accountIndex = 0) {
   if (!validLengths.includes(words.length)) {
     throw new Error(`Invalid mnemonic: Expected 12, 15, 18, 21 or 24 words, got ${words.length}`);
   }
-  lucid.selectWalletFromSeed(trimmed, { accountIndex });
-
-  // Store the full wallet address so credential-based UTxO lookups resolve correctly
-  const address = await lucid.wallet.address();
-  provider.setWalletAddress(address);
+  lucid.selectWallet.fromSeed(trimmed, { accountIndex });
 
   return lucid;
 }
@@ -159,10 +177,8 @@ async function initLucid(mnemonic, accountIndex = 0) {
 let _registryAddress = null;
 async function getRegistryAddress() {
   if (_registryAddress) return _registryAddress;
-  const provider = newProvider();
-  const lucid = await Lucid.new(provider, 'Mainnet');
-  const registryScript = { type: 'PlutusV3', script: REGISTRY_SCRIPT_CBOR };
-  _registryAddress = lucid.utils.validatorToAddress(lucidCompat(registryScript));
+  const registryScript = { type: 'PlutusV3' as const, script: REGISTRY_SCRIPT_CBOR };
+  _registryAddress = validatorToAddress('Mainnet', registryScript);
   return _registryAddress;
 }
 
@@ -308,12 +324,12 @@ ${capList}
         if (!safetyCheck.allowed) throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
 
         const lucid = await initLucid(mnemonic);
-        const walletAddress = await lucid.wallet.address();
-        const addressDetails = lucid.utils.getAddressDetails(walletAddress);
+        const walletAddress = await lucid.wallet().address();
+        const addressDetails = getAddressDetails(walletAddress);
         const vkeyHash = addressDetails.paymentCredential?.hash;
         if (!vkeyHash) throw new Error('Cannot derive payment key hash from wallet address');
 
-        const utxos = await lucid.wallet.getUtxos();
+        const utxos = await lucid.utxosAt(await lucid.wallet().address());
         const seedUtxo = utxos.find(u => {
           const keys = Object.keys(u.assets);
           return keys.length === 1 && keys[0] === 'lovelace' && u.assets['lovelace'] >= MIN_AP3X_DEPOSIT + 2_000_000n;
@@ -323,18 +339,18 @@ ${capList}
         const nftAssetName = deriveNftAssetName(seedUtxo.txHash, seedUtxo.outputIndex);
         const nftUnit = `${REGISTRY_POLICY_ID}${nftAssetName}`;
         const datum = buildAgentDatum(vkeyHash, name, description, capabilities, framework, endpoint);
-        const registryScript = { type: "PlutusV3", script: REGISTRY_SCRIPT_CBOR };
-        const registryAddress = lucid.utils.validatorToAddress(lucidCompat(registryScript));
+        const registryScript = { type: 'PlutusV3' as const, script: REGISTRY_SCRIPT_CBOR };
+        const registryAddress = validatorToAddress('Mainnet', registryScript);
         const registerRedeemer = Data.to(new Constr(0, [new Constr(0, [seedUtxo.txHash, BigInt(seedUtxo.outputIndex)])]));
 
         const tx = await lucid.newTx()
           .collectFrom([seedUtxo])
           .mintAssets({ [nftUnit]: 1n }, registerRedeemer)
-          .attachMintingPolicy(lucidCompat(registryScript))
-          .payToContract(registryAddress, { inline: datum }, { lovelace: MIN_AP3X_DEPOSIT, [nftUnit]: 1n })
+          .attach.MintingPolicy(registryScript)
+          .pay.ToAddressWithData(registryAddress, { kind: "inline", value: datum }, { lovelace: MIN_AP3X_DEPOSIT, [nftUnit]: 1n })
           .addSigner(walletAddress)
           .complete();
-        const signedTx = await tx.sign().complete();
+        const signedTx = await tx.sign.withWallet().complete();
         const txHash = await signedTx.submit();
         safetyLayer.recordTransaction(txHash, Number(MIN_AP3X_DEPOSIT), registryAddress);
 
@@ -398,8 +414,8 @@ Save your Agent DID — you'll need it to update, deregister, or let other agent
         if (capabilities !== undefined) validateCapabilities(capabilities);
 
         const lucid = await initLucid(mnemonic);
-        const walletAddress = await lucid.wallet.address();
-        const vkeyHash = lucid.utils.getAddressDetails(walletAddress).paymentCredential?.hash;
+        const walletAddress = await lucid.wallet().address();
+        const vkeyHash = getAddressDetails(walletAddress).paymentCredential?.hash;
         if (!vkeyHash) throw new Error('Cannot derive payment key hash from wallet address');
 
         const provider = newProvider();
@@ -414,17 +430,17 @@ Save your Agent DID — you'll need it to update, deregister, or let other agent
         const newEndpoint = endpoint ?? profile.endpoint;
 
         const newDatum = buildAgentDatum(vkeyHash, newName, newDesc, newCaps, newFramework, newEndpoint, profile.registeredAt);
-        const registryScript = { type: 'PlutusV3', script: REGISTRY_SCRIPT_CBOR };
-        const registryAddress = lucid.utils.validatorToAddress(lucidCompat(registryScript));
+        const registryScript = { type: 'PlutusV3' as const, script: REGISTRY_SCRIPT_CBOR };
+        const registryAddress = validatorToAddress('Mainnet', registryScript);
         const spendRedeemer = Data.to(new Constr(0, [])); // Update
 
         const tx = await lucid.newTx()
           .collectFrom([utxo], spendRedeemer)
-          .attachSpendingValidator(lucidCompat(registryScript))
-          .payToContract(registryAddress, { inline: newDatum }, { lovelace: MIN_AP3X_DEPOSIT, [nftUnit]: 1n })
+          .attach.SpendingValidator(registryScript)
+          .pay.ToAddressWithData(registryAddress, { kind: "inline", value: newDatum }, { lovelace: MIN_AP3X_DEPOSIT, [nftUnit]: 1n })
           .addSigner(walletAddress)
           .complete();
-        const signedTx = await tx.sign().complete();
+        const signedTx = await tx.sign.withWallet().complete();
         const txHash = await signedTx.submit();
         safetyLayer.recordTransaction(txHash, 0, registryAddress);
 
@@ -479,26 +495,26 @@ The agent's profile has been updated on-chain. The identity NFT and deposit are 
       if (rateLimited) return rateLimited;
       try {
         const lucid = await initLucid(mnemonic);
-        const walletAddress = await lucid.wallet.address();
-        const vkeyHash = lucid.utils.getAddressDetails(walletAddress).paymentCredential?.hash;
+        const walletAddress = await lucid.wallet().address();
+        const vkeyHash = getAddressDetails(walletAddress).paymentCredential?.hash;
         if (!vkeyHash) throw new Error('Cannot derive payment key hash from wallet address');
 
         const provider = newProvider();
         const { profile, utxo, nftUnit } = await resolveAgentUtxo(provider, agent_id);
         verifyOwnership(profile, vkeyHash);
 
-        const registryScript = { type: 'PlutusV3', script: REGISTRY_SCRIPT_CBOR };
+        const registryScript = { type: 'PlutusV3' as const, script: REGISTRY_SCRIPT_CBOR };
         const spendRedeemer = Data.to(new Constr(1, [])); // Deregister
         const mintRedeemer = Data.to(new Constr(1, []));  // Burn
 
         const tx = await lucid.newTx()
           .collectFrom([utxo], spendRedeemer)
-          .attachSpendingValidator(lucidCompat(registryScript))
+          .attach.SpendingValidator(registryScript)
           .mintAssets({ [nftUnit]: -1n }, mintRedeemer)
-          .attachMintingPolicy(lucidCompat(registryScript))
+          .attach.MintingPolicy(registryScript)
           .addSigner(walletAddress)
           .complete();
-        const signedTx = await tx.sign().complete();
+        const signedTx = await tx.sign.withWallet().complete();
         const txHash = await signedTx.submit();
         safetyLayer.recordTransaction(txHash, 0, walletAddress);
 
@@ -548,14 +564,14 @@ The agent's identity NFT has been burned and the 10 AP3X deposit has been return
       if (rateLimited) return rateLimited;
       try {
         const lucid = await initLucid(mnemonic);
-        const walletAddress = await lucid.wallet.address();
-        const vkeyHash = lucid.utils.getAddressDetails(walletAddress).paymentCredential?.hash;
+        const walletAddress = await lucid.wallet().address();
+        const vkeyHash = getAddressDetails(walletAddress).paymentCredential?.hash;
         if (!vkeyHash) throw new Error('Cannot derive payment key hash from wallet address');
 
         // Validate new owner address
         let newOwnerDetails;
         try {
-          newOwnerDetails = lucid.utils.getAddressDetails(new_owner_address);
+          newOwnerDetails = getAddressDetails(new_owner_address);
         } catch {
           throw new Error(`Invalid new owner address: "${new_owner_address}". Must be a valid bech32 address.`);
         }
@@ -574,17 +590,17 @@ The agent's identity NFT has been burned and the 10 AP3X deposit has been return
           profile.capabilities, profile.framework, profile.endpoint,
           profile.registeredAt
         );
-        const registryScript = { type: 'PlutusV3', script: REGISTRY_SCRIPT_CBOR };
-        const registryAddress = lucid.utils.validatorToAddress(lucidCompat(registryScript));
+        const registryScript = { type: 'PlutusV3' as const, script: REGISTRY_SCRIPT_CBOR };
+        const registryAddress = validatorToAddress('Mainnet', registryScript);
         const spendRedeemer = Data.to(new Constr(0, [])); // Update (transfer uses Update redeemer)
 
         const tx = await lucid.newTx()
           .collectFrom([utxo], spendRedeemer)
-          .attachSpendingValidator(lucidCompat(registryScript))
-          .payToContract(registryAddress, { inline: newDatum }, { lovelace: MIN_AP3X_DEPOSIT, [nftUnit]: 1n })
+          .attach.SpendingValidator(registryScript)
+          .pay.ToAddressWithData(registryAddress, { kind: "inline", value: newDatum }, { lovelace: MIN_AP3X_DEPOSIT, [nftUnit]: 1n })
           .addSigner(walletAddress)
           .complete();
-        const signedTx = await tx.sign().complete();
+        const signedTx = await tx.sign.withWallet().complete();
         const txHash = await signedTx.submit();
         safetyLayer.recordTransaction(txHash, 0, registryAddress);
 
@@ -640,17 +656,17 @@ Ownership has been transferred. The new owner can now update, transfer, or dereg
         if (!profile.ownerVkeyHash) throw new Error('Could not parse agent owner from registry datum');
 
         const lucid = await initLucid(mnemonic);
-        const senderAddress = await lucid.wallet.address();
-        const recipientAddress = lucid.utils.credentialToAddress({ type: 'Key', hash: profile.ownerVkeyHash });
+        const senderAddress = await lucid.wallet().address();
+        const recipientAddress = credentialToAddress('Mainnet', { type: 'Key', hash: profile.ownerVkeyHash });
         const minAda = 2_000_000n;
         const safetyCheck = safetyLayer.checkTransaction(Number(minAda));
         if (!safetyCheck.allowed) throw new Error(`Safety limit exceeded: ${safetyCheck.reason}`);
 
         const tx = await lucid.newTx()
-          .payToAddress(recipientAddress, { lovelace: minAda })
-          .attachMetadata(AGENT_MESSAGE_LABEL, { msg: ['a2a'], from: senderAddress, to: agent_id, type: message_type, payload })
+          .pay.ToAddress(recipientAddress, { lovelace: minAda })
+          .attachMetadata(AGENT_MESSAGE_LABEL, { msg: ['a2a'], from: metadataStr(senderAddress), to: metadataStr(agent_id), type: message_type, payload: metadataStr(payload) })
           .complete();
-        const signedTx = await tx.sign().complete();
+        const signedTx = await tx.sign.withWallet().complete();
         const txHash = await signedTx.submit();
         safetyLayer.recordTransaction(txHash, Number(minAda), recipientAddress);
 
