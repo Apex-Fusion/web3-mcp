@@ -147,7 +147,7 @@ describe('Transaction Tools', () => {
     assert.ok(walletAddress, 'Wallet address required');
     // Wait for previous tx UTxOs to settle
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle...');
+      console.log('Waiting 10s for UTxOs to settle...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_send_apex', {
@@ -163,7 +163,7 @@ describe('Transaction Tools', () => {
     assert.ok(walletAddress, 'Wallet address required');
     // Wait for send_apex UTxOs to settle
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle...');
+      console.log('Waiting 10s for UTxOs to settle...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_send_tokens', {
@@ -183,7 +183,7 @@ describe('Transaction Tools', () => {
 describe('Smart Contract Tools', () => {
   test('vector_deploy_contract', { timeout: 120_000 }, async () => {
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle before deploy...');
+      console.log('Waiting 10s for UTxOs to settle before deploy...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_deploy_contract', {
@@ -197,7 +197,7 @@ describe('Smart Contract Tools', () => {
 
   test('vector_interact_contract (lock)', { timeout: 120_000 }, async () => {
     if (walletHasAda) {
-      console.log('Waiting 30s for deploy tx to confirm...');
+      console.log('Waiting 10s for deploy tx to confirm...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_interact_contract', {
@@ -214,7 +214,7 @@ describe('Smart Contract Tools', () => {
 
   test('vector_interact_contract (spend)', { timeout: 120_000 }, async () => {
     if (walletHasAda) {
-      console.log('Waiting 30s for lock tx to confirm...');
+      console.log('Waiting 10s for lock tx to confirm...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_interact_contract', {
@@ -234,7 +234,7 @@ describe('Smart Contract Tools', () => {
 describe('Agent Network Tools', () => {
   test('vector_register_agent', { timeout: 120_000 }, async () => {
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle before register...');
+      console.log('Waiting 10s for UTxOs to settle before register...');
       await wait(10);
     }
     const timestamp = Date.now();
@@ -258,7 +258,7 @@ describe('Agent Network Tools', () => {
 
   test('vector_discover_agents (no mnemonic)', { timeout: 120_000 }, async () => {
     if (walletHasAda && agentDid) {
-      console.log('Waiting 30s for agent registration to confirm...');
+      console.log('Waiting 10s for agent registration to confirm...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_discover_agents', {});
@@ -280,7 +280,7 @@ describe('Agent Network Tools', () => {
       return;
     }
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle before update...');
+      console.log('Waiting 10s for UTxOs to settle before update...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_update_agent', {
@@ -298,7 +298,7 @@ describe('Agent Network Tools', () => {
       return;
     }
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle before transfer...');
+      console.log('Waiting 10s for UTxOs to settle before transfer...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_transfer_agent', {
@@ -314,7 +314,7 @@ describe('Agent Network Tools', () => {
     // Use a known DID format even if registration failed, to test the tool responds
     const testDid = agentDid || `did:vector:agent:${ALWAYS_SUCCEEDS_V3}:${'a'.repeat(64)}`;
     if (walletHasAda && agentDid) {
-      console.log('Waiting 30s for UTxOs to settle before message...');
+      console.log('Waiting 10s for UTxOs to settle before message...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_message_agent', {
@@ -333,7 +333,7 @@ describe('Agent Network Tools', () => {
       return;
     }
     if (walletHasAda) {
-      console.log('Waiting 30s for UTxOs to settle before deregister...');
+      console.log('Waiting 10s for UTxOs to settle before deregister...');
       await wait(10);
     }
     const text = await callTool(ctx.client, 'vector_deregister_agent', {
