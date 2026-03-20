@@ -1,10 +1,10 @@
 {
-  "name": "vector-mcp-server",
-  "version": "1.0.0",
+  "name": "@apexfusion/mcp-server",
+  "version": "0.1.0",
   "main": "index.js",
   "type": "module",
   "bin": {
-    "vector-mcp": "./build/index.js"
+    "mcp-server": "./build/index.js"
   },
   "scripts": {
     "postinstall": "ln -sf ../../../libsodium-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs node_modules/libsodium-wrappers-sumo/dist/modules-sumo-esm/libsodium-sumo.mjs 2>/dev/null || true",
@@ -31,11 +31,11 @@
   "description": "MCP server for Vector blockchain — AI agent interface for Apex Fusion's L2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Apex-Fusion/vector-ai-agents.git"
+    "url": "https://github.com/Apex-Fusion/mcp-server.git"
   },
-  "homepage": "https://github.com/Apex-Fusion/vector-ai-agents#readme",
+  "homepage": "https://github.com/Apex-Fusion/mcp-server#readme",
   "bugs": {
-    "url": "https://github.com/Apex-Fusion/vector-ai-agents/issues"
+    "url": "https://github.com/Apex-Fusion/mcp-server/issues"
   },
   "engines": {
     "node": ">=14.0.0"
