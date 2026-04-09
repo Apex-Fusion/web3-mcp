@@ -173,6 +173,14 @@ export class OgmiosProvider implements Provider {
     );
   }
 
+  async getNetworkTip(): Promise<{ slot: number; hash: string }> {
+    const result = await this.rpc('queryNetwork/tip');
+    return {
+      slot: result.slot ?? 0,
+      hash: result.id ?? '',
+    };
+  }
+
   async getUtxosByOutRef(outRefs: OutRef[]): Promise<UTxO[]> {
     const outputReferences = outRefs.map((ref) => ({
       transaction: { id: ref.txHash },
