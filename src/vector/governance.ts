@@ -3,7 +3,7 @@
 // Game 6 of the Vector game theory ecosystem
 
 import { z } from "zod";
-import { Lucid, fromText, toText, Data, Constr, credentialToAddress, getAddressDetails, SLOT_CONFIG_NETWORK } from '@lucid-evolution/lucid';
+import { Lucid, fromText, toText, Data, Constr, credentialToAddress, getAddressDetails, SLOT_CONFIG_NETWORK, slotToUnixTime } from '@lucid-evolution/lucid';
 
 // Vector testnet slot config — system start 2025-07-09T10:38:04Z, 1s slots
 SLOT_CONFIG_NETWORK.Mainnet = { zeroTime: 1752057484000, zeroSlot: 0, slotLength: 1000 };
@@ -559,13 +559,12 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
 
         // Get current slot and derive POSIX times for validity range
         // The validator checks: activity.last_proposal_slot == tx_validity_lower_bound
-        // So we must derive validFrom from the SAME slot used in the datum
-        const VECTOR_GENESIS_MS = 1752057484000; // 2025-07-09T10:38:04Z
+        // Use Lucid's own slotToUnixTime to guarantee the POSIX→slot roundtrip is exact
         const tip2 = await provider.getNetworkTip();
         const spendSlot = tip2.slot;
-        const slotPosixMs = VECTOR_GENESIS_MS + spendSlot * 1000;
-        const validFromMs = slotPosixMs;          // exactly at spendSlot
-        const validToMs = slotPosixMs + 360_000;  // 6 minutes from spendSlot
+        const slotConfig = SLOT_CONFIG_NETWORK['Mainnet'];
+        const validFromMs = slotToUnixTime(slotConfig, spendSlot);
+        const validToMs = validFromMs + 360_000;  // 6 minutes from spendSlot
 
         // Activity datum (first proposal: count=1)
         // TODO: For subsequent proposals, find existing pact_ UTxO and increment count
