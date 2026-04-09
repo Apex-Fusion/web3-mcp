@@ -472,7 +472,19 @@ export class OgmiosProvider implements Provider {
       let scriptRef: any = null;
       if (output.script) {
         const script = output.script;
-        if (script['plutus:v2']) {
+        // Ogmios v6 format: { language: "plutus:v3", cbor: "..." }
+        if (script.language && script.cbor) {
+          const langMap: Record<string, string> = {
+            'plutus:v1': 'PlutusV1',
+            'plutus:v2': 'PlutusV2',
+            'plutus:v3': 'PlutusV3',
+          };
+          const lucidType = langMap[script.language];
+          if (lucidType) {
+            scriptRef = { type: lucidType, script: script.cbor };
+          }
+        // Legacy format: { "plutus:v2": "..." }
+        } else if (script['plutus:v2']) {
           scriptRef = { type: 'PlutusV2', script: script['plutus:v2'] };
         } else if (script['plutus:v1']) {
           scriptRef = { type: 'PlutusV1', script: script['plutus:v1'] };
