@@ -3,7 +3,10 @@
 // Game 6 of the Vector game theory ecosystem
 
 import { z } from "zod";
-import { Lucid, fromText, toText, Data, Constr, credentialToAddress, getAddressDetails } from '@lucid-evolution/lucid';
+import { Lucid, fromText, toText, Data, Constr, credentialToAddress, getAddressDetails, SLOT_CONFIG_NETWORK } from '@lucid-evolution/lucid';
+
+// Vector testnet slot config — system start 2025-07-09T10:38:04Z, 1s slots
+SLOT_CONFIG_NETWORK.Mainnet = { zeroTime: 1752057484000, zeroSlot: 0, slotLength: 1000 };
 import { blake2b } from '@noble/hashes/blake2b';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { OgmiosProvider } from './ogmios-provider.js';
