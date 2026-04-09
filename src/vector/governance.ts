@@ -25,6 +25,15 @@ const GOV_CRITIQUE_MINT_HASH = process.env.GOV_CRITIQUE_MINT_HASH || '2e252a8989
 const GOV_ENDORSEMENT_SPEND_HASH = process.env.GOV_ENDORSEMENT_SPEND_HASH || '5fc449848d85f30287e5bc0bd2b3e95d872ef97be27f1480c12f1a9d';
 const GOV_TREASURY_ADDRESS = process.env.GOV_TREASURY_ADDRESS || 'addr1wx434t2jc3m5uhdf7tq05xjdqu3q5z7a2lhrmn5mapsd43srh7ll8';
 
+// Reference script UTxOs (CIP-33) — for validated submit
+const GOV_PROPOSAL_SPEND_REF = process.env.GOV_PROPOSAL_SPEND_REF || '4c7de3a2ccc8b46a5929523f410d457d2ba322b1a0a0f46764d441a6185f05df#0';
+const GOV_PROPOSAL_MINT_REF = process.env.GOV_PROPOSAL_MINT_REF || 'e82c188244cba737312119cc93efcb88544b3f7a12e94adad5f1360043afc3bd#0';
+
+// Infrastructure UTxOs (governance reference inputs)
+const GOV_PARAMS_UTXO = process.env.GOV_PARAMS_UTXO || 'bbe1aedc7b1978daf6065819c4f8a4b84d058fb705da2b6696f2ca0286adaff0#0';
+const GOV_ORACLE_UTXO = process.env.GOV_ORACLE_UTXO || 'a5b71cea177c2b9589877c0de8ead7daa3bd4d0b5b951a1ded7845961fcf2213#0';
+const GOV_CROSSREFS_UTXO = process.env.GOV_CROSSREFS_UTXO || 'b0ae0684bad3db716d1dabe4d16f1aa1f2af0a31079eb2efc9e1efa59b6f2dfb#0';
+
 // Proposal state CBOR constructor tags
 const STATE_NAMES: Record<number, string> = {
   0: 'Open',
@@ -99,6 +108,24 @@ function deriveActivityTokenName(agentDid: string): string {
   const prefixHex = Buffer.from('pact_', 'utf-8').toString('hex');
   const hashSlice = Buffer.from(hashBytes).toString('hex').slice(0, 54);
   return prefixHex + hashSlice;
+}
+
+// ─── Validated Submit Helpers ─────────────────────────────────────────────────
+
+function parseUtxoRef(ref: string): { txHash: string; outputIndex: number } {
+  const [txHash, idx] = ref.split('#');
+  return { txHash, outputIndex: parseInt(idx) };
+}
+
+async function waitForTx(provider: any, txHash: string, maxAttempts = 30, delayMs = 2000): Promise<void> {
+  for (let i = 0; i < maxAttempts; i++) {
+    try {
+      const utxos = await provider.getUtxosByOutRef([{ txHash, outputIndex: 0 }]);
+      if (utxos && utxos.length > 0) return;
+    } catch {}
+    await new Promise(r => setTimeout(r, delayMs));
+  }
+  throw new Error(`TX ${txHash} not confirmed after ${maxAttempts * delayMs / 1000}s`);
 }
 
 // ─── Filebase IPFS Upload ────────────────────────────────────────────────────
@@ -501,7 +528,7 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
           new Constr(0, []),                 // state = Open
         ]));
 
-        // Lock ProposalDatum at proposal_spend address
+        // === Step 1: Lock ProposalDatum at proposal_spend address ===
         const proposalSpendAddress = credentialToAddress('Mainnet', { type: 'Script', hash: GOV_PROPOSAL_SPEND_HASH });
 
         const lockTx = await lucid.newTx()
@@ -515,27 +542,97 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
         const signedLockTx = await lockTx.sign.withWallet().complete();
         const lockTxHash = await signedLockTx.submit();
 
-        safetyLayer.recordTransaction(lockTxHash, stakeLovelace + 2_000_000, proposalSpendAddress);
+        // === Step 2: Spend + Mint (validated submit) ===
+        await waitForTx(provider, lockTxHash);
+
+        // Derive token names
+        const propTokenName = deriveProposalTokenName(lockTxHash, 0);
+        const actTokenName = deriveActivityTokenName(agentDid);
+        const propTokenUnit = GOV_PROPOSAL_MINT_HASH + propTokenName;
+        const actTokenUnit = GOV_PROPOSAL_MINT_HASH + actTokenName;
+
+        // Re-query tip for spend validity range
+        const tip2 = await provider.getNetworkTip?.() || { slot: 0 };
+        const spendSlot = (tip2.slot || 0) - 60;
+
+        // Activity datum (first proposal: count=1)
+        // TODO: For subsequent proposals, find existing pact_ UTxO and increment count
+        const activityDatum = Data.to(new Constr(0, [
+          agentDid,                          // agent_did
+          new Constr(0, [vkeyHash]),         // agent_credential
+          1n,                                 // active_proposal_count
+          BigInt(spendSlot),                 // last_proposal_slot
+        ]));
+
+        // Redeemer: SubmitProposal = Constructor 0
+        const submitRedeemer = Data.to(new Constr(0, []));
+
+        // Get the locked UTxO
+        const lockedUtxos = await lucid.utxosByOutRef([{ txHash: lockTxHash, outputIndex: 0 }]);
+        if (!lockedUtxos.length) throw new Error('Locked UTxO not found after confirmation');
+
+        // Get reference script UTxOs (CIP-33)
+        const refScriptUtxos = await lucid.utxosByOutRef([
+          parseUtxoRef(GOV_PROPOSAL_SPEND_REF),
+          parseUtxoRef(GOV_PROPOSAL_MINT_REF),
+        ]);
+
+        // Get governance infrastructure reference inputs
+        const govRefUtxos = await lucid.utxosByOutRef([
+          parseUtxoRef(GOV_PARAMS_UTXO),
+          parseUtxoRef(GOV_ORACLE_UTXO),
+          parseUtxoRef(GOV_CROSSREFS_UTXO),
+        ]);
+
+        // Build Step 2 transaction: spend locked UTxO + mint tokens
+        const spendTx = await lucid.newTx()
+          .collectFrom(lockedUtxos, submitRedeemer)
+          .readFrom(refScriptUtxos)
+          .readFrom(govRefUtxos)
+          .mintAssets(
+            { [propTokenUnit]: 1n, [actTokenUnit]: 1n },
+            submitRedeemer
+          )
+          .pay.ToAddressWithData(
+            proposalSpendAddress,
+            { kind: "inline", value: proposalDatum },
+            { lovelace: BigInt(stakeLovelace + 2_000_000), [propTokenUnit]: 1n }
+          )
+          .pay.ToAddressWithData(
+            proposalSpendAddress,
+            { kind: "inline", value: activityDatum },
+            { lovelace: 2_000_000n, [actTokenUnit]: 1n }
+          )
+          .addSigner(walletAddr)
+          .validFrom(spendSlot)
+          .validTo(spendSlot + 360)
+          .complete({ localUPLCEval: false });
+
+        const signedSpendTx = await spendTx.sign.withWallet().complete();
+        const spendTxHash = await signedSpendTx.submit();
+
+        safetyLayer.recordTransaction(spendTxHash, stakeLovelace + 4_000_000, proposalSpendAddress);
 
         return {
           content: [{
             type: "text",
-            text: `# Proposal Submitted
+            text: `# Proposal Submitted (Validated)
 
-**Transaction:** ${lockTxHash}
+**Transaction:** ${spendTxHash}
+**Lock TX:** ${lockTxHash}
 **Stake:** ${stakeApex} AP3X
 **Type:** ${proposalType}
 **Priority:** ${priority}
 **Storage:** ${finalUri}
+**Proposal Token:** ${propTokenName}
+**Activity Token:** ${actTokenName}
 **Script Address:** ${proposalSpendAddress}
 ${ipfsCid ? `**IPFS CID:** ${ipfsCid}\n**Hash (auto-computed):** ${finalHash}` : ''}
 
-The proposal datum is now locked at the governance script address.
+Proposal submitted with on-chain validation. Proposal token (\`prop_\`) and
+activity tracking token (\`pact_\`) minted. Visible on the Foundation dashboard.
 
-[View on Explorer](${explorerTxLink(lockTxHash)})
-
-**Note:** This is a lock-only submission. Full validated submission with
-proposal token minting requires the multi-validator flow (coming soon).`,
+[View on Explorer](${explorerTxLink(spendTxHash)})`,
           }],
         };
       } catch (err) {
