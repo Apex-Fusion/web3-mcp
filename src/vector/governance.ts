@@ -507,7 +507,7 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
             typeDatum = new Constr(4, []);
         }
 
-        // Get current slot
+        // Get current slot (used for Step 1 datum; will be refreshed for Step 2)
         const tip = await provider.getNetworkTip?.() || { slot: 0 };
         const currentSlot = tip.slot || 0;
 
@@ -557,12 +557,15 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
         const propTokenUnit = GOV_PROPOSAL_MINT_HASH + propTokenName;
         const actTokenUnit = GOV_PROPOSAL_MINT_HASH + actTokenName;
 
-        // Get current slot + POSIX time for validity range and datum
+        // Get current slot and derive POSIX times for validity range
+        // The validator checks: activity.last_proposal_slot == tx_validity_lower_bound
+        // So we must derive validFrom from the SAME slot used in the datum
+        const VECTOR_GENESIS_MS = 1752057484000; // 2025-07-09T10:38:04Z
         const tip2 = await provider.getNetworkTip();
         const spendSlot = tip2.slot;
-        const nowMs = Date.now();
-        const validFromMs = nowMs - 60_000;   // 60 seconds ago
-        const validToMs = nowMs + 360_000;    // 6 minutes from now
+        const slotPosixMs = VECTOR_GENESIS_MS + spendSlot * 1000;
+        const validFromMs = slotPosixMs;          // exactly at spendSlot
+        const validToMs = slotPosixMs + 360_000;  // 6 minutes from spendSlot
 
         // Activity datum (first proposal: count=1)
         // TODO: For subsequent proposals, find existing pact_ UTxO and increment count
