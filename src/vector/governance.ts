@@ -557,7 +557,9 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
         const propTokenUnit = GOV_PROPOSAL_MINT_HASH + propTokenName;
         const actTokenUnit = GOV_PROPOSAL_MINT_HASH + actTokenName;
 
-        // Validity range: Lucid .validFrom/.validTo expect POSIX time in ms
+        // Get current slot + POSIX time for validity range and datum
+        const tip2 = await provider.getNetworkTip();
+        const spendSlot = tip2.slot;
         const nowMs = Date.now();
         const validFromMs = nowMs - 60_000;   // 60 seconds ago
         const validToMs = nowMs + 360_000;    // 6 minutes from now
@@ -568,7 +570,7 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
           agentDid,                          // agent_did
           new Constr(0, [vkeyHash]),         // agent_credential
           1n,                                 // active_proposal_count
-          BigInt(nowMs),                      // last_proposal_slot (POSIX ms)
+          BigInt(spendSlot),                  // last_proposal_slot
         ]));
 
         // Redeemer: SubmitProposal = Constructor 0
