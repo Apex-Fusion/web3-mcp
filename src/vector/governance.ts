@@ -551,9 +551,10 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
         const propTokenUnit = GOV_PROPOSAL_MINT_HASH + propTokenName;
         const actTokenUnit = GOV_PROPOSAL_MINT_HASH + actTokenName;
 
-        // Re-query tip for spend validity range
-        const tip2 = await provider.getNetworkTip?.() || { slot: 0 };
-        const spendSlot = (tip2.slot || 0) - 60;
+        // Validity range: Lucid .validFrom/.validTo expect POSIX time in ms
+        const nowMs = Date.now();
+        const validFromMs = nowMs - 60_000;   // 60 seconds ago
+        const validToMs = nowMs + 360_000;    // 6 minutes from now
 
         // Activity datum (first proposal: count=1)
         // TODO: For subsequent proposals, find existing pact_ UTxO and increment count
@@ -561,7 +562,7 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
           agentDid,                          // agent_did
           new Constr(0, [vkeyHash]),         // agent_credential
           1n,                                 // active_proposal_count
-          BigInt(spendSlot),                 // last_proposal_slot
+          BigInt(nowMs),                      // last_proposal_slot (POSIX ms)
         ]));
 
         // Redeemer: SubmitProposal = Constructor 0
@@ -622,8 +623,8 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
             { lovelace: 2_000_000n, [actTokenUnit]: 1n }
           )
           .addSigner(walletAddr)
-          .validFrom(spendSlot)
-          .validTo(spendSlot + 360)
+          .validFrom(validFromMs)
+          .validTo(validToMs)
           .complete({ localUPLCEval: false });
 
         const signedSpendTx = await spendTx.sign.withWallet().complete();
