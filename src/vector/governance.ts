@@ -562,8 +562,9 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
         // Use Lucid's own slotToUnixTime to guarantee the POSIX→slot roundtrip is exact
         const tip2 = await provider.getNetworkTip();
         const spendSlot = tip2.slot;
-        const slotConfig = SLOT_CONFIG_NETWORK['Mainnet'];
-        const validFromMs = slotToUnixTime(slotConfig, spendSlot);
+        // Vector testnet: genesis 2025-07-09T10:38:04Z, 1s slots, zeroSlot=0
+        const vectorSlotConfig = { zeroTime: 1752057484000, zeroSlot: 0, slotLength: 1000 };
+        const validFromMs = slotToUnixTime(vectorSlotConfig, spendSlot);
         const validToMs = validFromMs + 360_000;  // 6 minutes from spendSlot
 
         // Activity datum (first proposal: count=1)
