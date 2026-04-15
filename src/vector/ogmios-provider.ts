@@ -181,6 +181,16 @@ export class OgmiosProvider implements Provider {
     };
   }
 
+  /**
+   * Query the genesis system start time from Ogmios.
+   * Returns POSIX milliseconds (e.g. 1756485600000 for Vector mainnet).
+   */
+  async getSystemStartMs(): Promise<number> {
+    const result = await this.rpc('queryNetwork/startTime');
+    // Result is an ISO 8601 string, e.g. "2025-08-29T16:40:00Z"
+    return new Date(result).getTime();
+  }
+
   async getUtxosByOutRef(outRefs: OutRef[]): Promise<UTxO[]> {
     const outputReferences = outRefs.map((ref) => ({
       transaction: { id: ref.txHash },

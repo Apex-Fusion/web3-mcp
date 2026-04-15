@@ -5,8 +5,17 @@
 import { z } from "zod";
 import { Lucid, fromText, toText, Data, Constr, credentialToAddress, getAddressDetails, SLOT_CONFIG_NETWORK } from '@lucid-evolution/lucid';
 
-// Vector testnet slot config — system start 2025-07-09T10:38:04Z, 1s slots
-SLOT_CONFIG_NETWORK.Mainnet = { zeroTime: 1752057484000, zeroSlot: 0, slotLength: 1000 };
+// Vector slot config — resolved from chain via Ogmios queryNetwork/startTime
+// Cached after first query so SLOT_CONFIG_NETWORK is set before Lucid needs it
+let vectorZeroTime: number | null = null;
+
+async function ensureSlotConfig(provider: OgmiosProvider): Promise<number> {
+  if (vectorZeroTime === null) {
+    vectorZeroTime = await provider.getSystemStartMs();
+    SLOT_CONFIG_NETWORK.Mainnet = { zeroTime: vectorZeroTime, zeroSlot: 0, slotLength: 1000 };
+  }
+  return vectorZeroTime;
+}
 import { blake2b } from '@noble/hashes/blake2b';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { OgmiosProvider } from './ogmios-provider.js';
@@ -478,6 +487,7 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
         if (!finalUri) throw new Error('storageUri is required. Provide proposalDocument for auto-upload or storageUri manually.');
 
         const provider = newProvider();
+        const zeroTime = await ensureSlotConfig(provider);
         const lucid = await Lucid(provider, 'Mainnet');
         lucid.selectWallet.fromSeed(mnemonic.trim());
         const walletAddress = await lucid.wallet().address();
@@ -509,7 +519,7 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
 
         // Get current POSIX time for datum (Plutus validity range uses POSIX ms, not slots)
         const tip = await provider.getNetworkTip?.() || { slot: 0 };
-        const currentSlot = 1752057484000 + (tip.slot || 0) * 1000; // POSIX ms
+        const currentSlot = zeroTime + (tip.slot || 0) * 1000; // POSIX ms
 
         // Priority datum
         const priorityDatum = priority === 'Emergency' ? new Constr(1, []) : new Constr(0, []);
@@ -559,12 +569,9 @@ Each batch UTxO holds ~30 AP3X for adoption rewards.`,
 
         // Get current slot and derive POSIX times for validity range
         // The validator checks: activity.last_proposal_slot == tx_validity_lower_bound
-        // Use Lucid's own slotToUnixTime to guarantee the POSIX→slot roundtrip is exact
         const tip2 = await provider.getNetworkTip();
         const spendSlot = tip2.slot;
-        // Convert slot → POSIX ms using Vector testnet genesis (2025-07-09T10:38:04Z)
-        // This ensures validFrom converts back to exactly spendSlot after Lucid's POSIX→slot roundtrip
-        const validFromMs = 1752057484000 + spendSlot * 1000;
+        const validFromMs = zeroTime + spendSlot * 1000;
         const validToMs = validFromMs + 360_000;  // 6 minutes from spendSlot
 
         // Activity datum (first proposal: count=1)
@@ -740,6 +747,7 @@ activity tracking token (\`pact_\`) minted. Visible on the Foundation dashboard.
         if (!finalUri) throw new Error('storageUri is required. Provide critiqueDocument or storageUri manually.');
 
         const provider = newProvider();
+        await ensureSlotConfig(provider);
         const lucid = await Lucid(provider, 'Mainnet');
         lucid.selectWallet.fromSeed(mnemonic.trim());
         const walletAddress = await lucid.wallet().address();
@@ -842,6 +850,7 @@ ${ipfsCid ? `**IPFS CID:** ${ipfsCid}\n**Hash (auto-computed):** ${finalHash}` :
 
       try {
         const provider = newProvider();
+        await ensureSlotConfig(provider);
         const lucid = await Lucid(provider, 'Mainnet');
         lucid.selectWallet.fromSeed(mnemonic.trim());
 
