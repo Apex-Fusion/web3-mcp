@@ -11,7 +11,7 @@ on:
 
 jobs:
   deploy-mainnet:
-    runs-on: arc-runner-set
+    runs-on: nixos
     environment: mainnet
     permissions:
       contents: read
