@@ -20,7 +20,7 @@ const VECTOR_KOIOS_URL = process.env.VECTOR_KOIOS_URL || 'https://koios.vector.t
 const VECTOR_EXPLORER_URL = process.env.VECTOR_EXPLORER_URL || 'https://vector.testnet.apexscan.org';
 
 // Agent Registry policy ID (shared across all modules)
-const AGENT_REGISTRY_POLICY = process.env.AGENT_REGISTRY_POLICY || '5dd5118943d5aa7329696181252a6565a27dbf2c6de92b02a6aae361';
+const AGENT_REGISTRY_POLICY = process.env.AGENT_REGISTRY_POLICY || 'be1a0a2912da180757ed3cd61b56bb8eab0188c19dc3c0e3912d2c01';
 
 // Governance contract hashes (from deploy_state.json)
 // These should be set via env vars in production
